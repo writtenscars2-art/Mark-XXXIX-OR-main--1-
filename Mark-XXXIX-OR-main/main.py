@@ -970,7 +970,23 @@ class JarvisLive:
             """
             import time as _time
             try:
-                mic = sr.Microphone(sample_rate=16000)
+                # List available mics at startup for diagnostics
+                mic_names = sr.Microphone.list_microphone_names()
+                print(f"[JARVIS] Available microphones ({len(mic_names)}):")
+                for i, name in enumerate(mic_names):
+                    print(f"  [{i}] {name}")
+
+                # Allow config to override mic index (add "mic_index": N to api_keys.json)
+                try:
+                    import json as _json2
+                    _cfg2 = _json2.load(open(API_CONFIG_PATH, encoding="utf-8"))
+                    _mic_idx = _cfg2.get("mic_index", None)
+                    if _mic_idx is not None:
+                        print(f"[JARVIS] Using mic index {_mic_idx}: {mic_names[_mic_idx] if _mic_idx < len(mic_names) else 'unknown'}")
+                except Exception:
+                    _mic_idx = None
+
+                mic = sr.Microphone(device_index=_mic_idx, sample_rate=16000)
 
                 # Open once, keep open for entire session
                 with mic as source:
@@ -1057,6 +1073,9 @@ class JarvisLive:
 
         def _loop():
             try:
+                # Show available mics
+                mic_names = sr.Microphone.list_microphone_names()
+                print(f"[JARVIS] Google STT — {len(mic_names)} mic(s) found. Using default.")
                 mic = sr.Microphone()
                 with mic as source:
                     rec.adjust_for_ambient_noise(source, duration=1.5)
