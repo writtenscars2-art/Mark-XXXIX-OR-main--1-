@@ -953,11 +953,11 @@ class JarvisLive:
         rec.pause_threshold          = 0.8
         rec.non_speaking_duration    = 0.5
 
-        # Short filler words / mishears from background noise — ignore these
+        # Short filler words that are pure mic noise — ignore these
+        # Note: "yes", "no", "ok" are intentionally NOT here — they're valid responses
         _NOISE_PHRASES = {
-            "", "uh", "um", "hmm", "hm", "ah", "oh", "the", "a", "and",
-            "yeah", "yes", "no", "ok", "okay", "huh", "what", "so", "i",
-            "you", "like", "mm", "mmm", "mhm", "uh huh", "right", "well",
+            "", "uh", "um", "hmm", "hm", "ah", "mm", "mmm", "mhm",
+            "uh huh", "the", "a",
         }
 
         print("[JARVIS] ElevenLabs Scribe STT started")
@@ -1005,14 +1005,9 @@ class JarvisLive:
                             )
                             text = (result.text or "").strip()
 
-                            # Reject obvious background noise mishears
+                            # Reject only pure mic noise mishears
                             text_lower = text.lower().rstrip(".,!? ")
-                            if (
-                                text
-                                and len(text) > 2
-                                and text_lower not in _NOISE_PHRASES
-                                and len(text.split()) >= 2  # require at least 2 words
-                            ):
+                            if text and len(text) > 1 and text_lower not in _NOISE_PHRASES:
                                 print(f"[JARVIS] Heard: {text}")
                                 self.ui._text_queue.put(text)
                             elif text:
@@ -1055,9 +1050,7 @@ class JarvisLive:
         rec.non_speaking_duration    = 0.5
 
         _NOISE = {
-            "", "uh", "um", "hmm", "hm", "ah", "oh", "the", "a", "and",
-            "yeah", "yes", "no", "ok", "okay", "huh", "what", "so", "i",
-            "you", "like", "mm", "mmm", "mhm", "uh huh", "right", "well",
+            "", "uh", "um", "hmm", "hm", "ah", "mm", "mmm", "mhm", "uh huh", "the", "a",
         }
 
         print("[JARVIS] Google STT fallback started")
@@ -1078,7 +1071,7 @@ class JarvisLive:
                             audio = rec.listen(source, timeout=5, phrase_time_limit=15)
                             text  = rec.recognize_google(audio).strip()
                             tl    = text.lower().rstrip(".,!? ")
-                            if text and len(text.split()) >= 2 and tl not in _NOISE:
+                            if text and len(text) > 1 and tl not in _NOISE:
                                 self.ui._text_queue.put(text)
                             elif text:
                                 print(f"[JARVIS] Noise filtered: {text!r}")
