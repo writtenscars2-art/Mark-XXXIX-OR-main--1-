@@ -496,7 +496,16 @@ class JarvisLive:
                 ptype = v.get("type", "string").lower()
                 if ptype not in ("object", "array", "integer", "number", "boolean"):
                     ptype = "string"
-                clean_props[k] = {**v, "type": ptype}
+                prop = {**v, "type": ptype}
+                # Fix nested items type for array properties (Groq strict validation)
+                if ptype == "array" and "items" in prop:
+                    nested = prop["items"]
+                    if isinstance(nested, dict) and "type" in nested:
+                        itype = nested["type"].lower()
+                        if itype not in ("object", "array", "integer", "number", "boolean", "null"):
+                            itype = "string"
+                        prop["items"] = {**nested, "type": itype}
+                clean_props[k] = prop
             tools_oai.append({
                 "type": "function",
                 "function": {
