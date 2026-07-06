@@ -471,40 +471,55 @@ class JarvisLive:
 
         def _stream_and_speak(messages: list) -> tuple[str, list]:
             """
-            Call NVIDIA NIM with streaming.
-            Speaks each complete sentence as soon as it arrives.
+            Call NVIDIA NIM with streaming + Nemotron extended thinking.
+            - reasoning_content tokens = internal thought (skipped, not spoken)
+            - content tokens = actual reply (spoken sentence-by-sentence)
             Returns (full_text, tool_calls_list).
             """
             buf        = ""
             full_text  = ""
-            tool_calls_raw: dict = {}   # id -> {name, arguments}
+            tool_calls_raw: dict = {}
+            model_name = _get_nvidia_model()
+
+            # Nemotron thinking params — only apply to thinking-capable models
+            is_thinking_model = "nemotron" in model_name.lower() or "thinking" in model_name.lower()
+            extra = {}
+            if is_thinking_model:
+                extra = {
+                    "extra_body": {
+                        "chat_template_kwargs": {"enable_thinking": True},
+                        "reasoning_budget": 2048,   # cap thinking tokens for speed
+                    }
+                }
 
             try:
                 stream = client.chat.completions.create(
-                    model=_get_nvidia_model(),
+                    model=model_name,
                     messages=messages,
                     tools=tools_oai,
                     tool_choice="auto",
-                    max_tokens=300,
-                    temperature=0.2,
+                    max_tokens=512,
+                    temperature=0.6,
                     stream=True,
+                    **extra,
                 )
 
                 for chunk in stream:
-                    delta = chunk.choices[0].delta if chunk.choices else None
-                    if delta is None:
+                    if not chunk.choices:
                         continue
+                    delta = chunk.choices[0].delta
+
+                    # Skip reasoning/thinking tokens entirely — internal only
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    if reasoning:
+                        continue  # don't speak or accumulate thinking
 
                     # Accumulate tool call fragments
                     if delta.tool_calls:
                         for tc in delta.tool_calls:
                             idx = tc.index
                             if idx not in tool_calls_raw:
-                                tool_calls_raw[idx] = {
-                                    "id":       tc.id or "",
-                                    "name":     "",
-                                    "arguments": "",
-                                }
+                                tool_calls_raw[idx] = {"id": "", "name": "", "arguments": ""}
                             if tc.function:
                                 if tc.function.name:
                                     tool_calls_raw[idx]["name"] += tc.function.name
@@ -513,12 +528,11 @@ class JarvisLive:
                             if tc.id and not tool_calls_raw[idx]["id"]:
                                 tool_calls_raw[idx]["id"] = tc.id
 
-                    # Accumulate text and speak sentence-by-sentence
+                    # Accumulate reply text and speak sentence-by-sentence
                     if delta.content:
                         buf       += delta.content
                         full_text += delta.content
 
-                        # Speak whenever we have a complete sentence
                         sentences = _re.split(r"(?<=[.!?])\s+", buf)
                         if len(sentences) > 1:
                             to_speak = " ".join(sentences[:-1]).strip()
@@ -530,17 +544,13 @@ class JarvisLive:
                 print(f"[JARVIS] Stream error: {e}")
                 raise
 
-            # Speak any remaining buffer
             if buf.strip():
                 self.speak(buf.strip())
 
-            # Convert raw tool_calls to structured list
-            tool_calls_list = []
-            for idx in sorted(tool_calls_raw.keys()):
-                tc = tool_calls_raw[idx]
-                if tc["name"]:
-                    tool_calls_list.append(tc)
-
+            tool_calls_list = [
+                tool_calls_raw[i] for i in sorted(tool_calls_raw)
+                if tool_calls_raw[i]["name"]
+            ]
             return full_text.strip(), tool_calls_list
 
         try:
