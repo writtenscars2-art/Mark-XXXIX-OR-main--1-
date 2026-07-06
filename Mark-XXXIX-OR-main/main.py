@@ -957,8 +957,16 @@ class JarvisLive:
         # Note: "yes", "no", "ok" are intentionally NOT here — they're valid responses
         _NOISE_PHRASES = {
             "", "uh", "um", "hmm", "hm", "ah", "mm", "mmm", "mhm",
-            "uh huh", "the", "a",
+            "uh huh", "the", "a", "oh", "eh", "hey", "hi",
+            "thank you", "thanks", "bye", "goodbye",
         }
+
+        # Patterns that indicate background noise / TV / music — not a user command
+        import re as _re_noise
+        _NOISE_PATTERNS = [
+            r"^\s*[\W\d]+\s*$",           # only punctuation/numbers
+            r"^.{1,2}$",                  # 1-2 char transcriptions
+        ]
 
         print("[JARVIS] ElevenLabs Scribe STT started")
         self.ui.write_log("SYS: Microphone active (ElevenLabs Scribe) — speak to JARVIS.")
@@ -1036,13 +1044,20 @@ class JarvisLive:
                             )
                             text = (result.text or "").strip()
 
-                            # Reject only pure mic noise mishears
+                            # Reject background noise and short fragments
                             text_lower = text.lower().rstrip(".,!? ")
-                            if text and len(text) > 1 and text_lower not in _NOISE_PHRASES:
+                            word_count = len(text.split())
+                            is_noise = (
+                                not text
+                                or word_count < 3          # require 3+ words
+                                or text_lower in _NOISE_PHRASES
+                                or any(_re_noise.match(p, text_lower) for p in _NOISE_PATTERNS)
+                            )
+                            if not is_noise:
                                 print(f"[JARVIS] Heard: {text}")
                                 self.ui._text_queue.put(text)
                             elif text:
-                                print(f"[JARVIS] Noise filtered: {text!r}")
+                                print(f"[JARVIS] Noise filtered ({word_count}w): {text!r}")
 
                         except sr.WaitTimeoutError:
                             pass  # silence — normal, keep listening

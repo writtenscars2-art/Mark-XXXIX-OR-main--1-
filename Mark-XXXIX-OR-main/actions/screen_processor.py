@@ -30,7 +30,7 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 # NVIDIA NIM — vision-capable model
 NVIDIA_BASE_URL    = "https://integrate.api.nvidia.com/v1"
-NVIDIA_VISION_MODEL = "nvidia/llama-3.2-90b-vision-instruct"
+NVIDIA_VISION_MODEL = "meta/llama-3.2-11b-vision-instruct"
 
 IMG_MAX_W = 640
 IMG_MAX_H = 360
