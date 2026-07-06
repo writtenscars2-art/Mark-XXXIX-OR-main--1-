@@ -1,0 +1,59 @@
+{
+  "identity": {
+    "name": {
+      "value": "Javi",
+      "updated": "2026-07-05"
+    },
+    "alias": {
+      "value": "Deucalion",
+      "updated": "2026-07-05"
+    }
+  },
+  "preferences": {
+    "hungry": {
+      "value": "is hungry",
+      "updated": "2026-07-04"
+    }
+  },
+  "projects": {},
+  "relationships": {},
+  "wishes": {},
+  "notes": {
+    "custom_command_login": {
+      "value": "open world monitor",
+      "updated": "2026-07-04"
+    },
+    "remember_instructions": {
+      "value": "remember and execute recurring instructions automatically",
+      "updated": "2026-07-04"
+    },
+    "avoid_bad_notice": {
+      "value": "avoid bad notice during login or startup",
+      "updated": "2026-07-04"
+    },
+    "custom_command_activate": {
+      "value": "double clap",
+      "updated": "2026-07-04"
+    },
+    "date": {
+      "value": "Saturday, July 4, 2026",
+      "updated": "2026-07-04"
+    },
+    "time": {
+      "value": "4:43 PM",
+      "updated": "2026-07-04"
+    }
+  },
+  "alias": {
+    "alias": {
+      "value": "Deucalion",
+      "updated": "2026-07-05"
+    }
+  },
+  "custom_command": {
+    "login": {
+      "value": "open world monitor",
+      "updated": "2026-07-05"
+    }
+  }
+}

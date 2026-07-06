@@ -1,0 +1,11 @@
+Model: meta/llama-3.3-70b-instruct
+
+=== TEST 1: Non-streaming simple reply ===
+Non-stream: 15.00s — 'All systems online.'
+
+=== TEST 2: Streaming — time to first token ===
+  First token: 47.37s
+  Full reply: 47.50s — '2 + 2 = 4'
+
+=== TEST 3: Streaming with tools ===
+  Full reply: 137.15s | finish_reason: tool_calls | text: ''
