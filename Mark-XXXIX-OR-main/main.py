@@ -922,8 +922,8 @@ class JarvisLive:
 
         el_client = _EL(api_key=el_key)
         rec       = sr.Recognizer()
-        rec.energy_threshold         = 1200   # high threshold — ignores background noise
-        rec.dynamic_energy_threshold = False  # don't adapt to noise level
+        rec.energy_threshold         = 300    # start low; calibration will raise it
+        rec.dynamic_energy_threshold = True   # adapt to environment continuously
         rec.pause_threshold          = 0.8
         rec.non_speaking_duration    = 0.5
 
@@ -949,7 +949,9 @@ class JarvisLive:
                 # Open once, keep open for entire session
                 with mic as source:
                     rec.adjust_for_ambient_noise(source, duration=1.5)
-                    print("[JARVIS] Mic calibrated — listening continuously")
+                    # Set threshold to 2x ambient — detects speech, rejects background noise
+                    rec.energy_threshold = max(300, rec.energy_threshold * 2)
+                    print(f"[JARVIS] Mic calibrated — threshold: {rec.energy_threshold:.0f}")
 
                     while True:
                         # Pause while muted or speaking (avoids echo)
@@ -1021,8 +1023,8 @@ class JarvisLive:
 
         loop = asyncio.get_event_loop()
         rec  = sr.Recognizer()
-        rec.energy_threshold         = 1200   # ignore background noise
-        rec.dynamic_energy_threshold = False  # don't adapt to noise
+        rec.energy_threshold         = 300    # start low; calibration raises it
+        rec.dynamic_energy_threshold = True   # adapt continuously
         rec.pause_threshold          = 0.8
         rec.non_speaking_duration    = 0.5
 
@@ -1039,7 +1041,8 @@ class JarvisLive:
                 mic = sr.Microphone()
                 with mic as source:
                     rec.adjust_for_ambient_noise(source, duration=1.5)
-                    print("[JARVIS] Google STT mic calibrated")
+                    rec.energy_threshold = max(300, rec.energy_threshold * 2)
+                    print(f"[JARVIS] Google STT calibrated — threshold: {rec.energy_threshold:.0f}")
 
                     while True:
                         if self.ui.muted or self._is_speaking:
