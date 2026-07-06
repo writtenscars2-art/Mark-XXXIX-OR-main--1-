@@ -1005,8 +1005,9 @@ class JarvisLive:
                 # Open once, keep open for entire session
                 with mic as source:
                     rec.adjust_for_ambient_noise(source, duration=1.5)
-                    # Use calibrated threshold + small buffer — don't multiply by 2 for quiet mics
-                    rec.energy_threshold = max(50, rec.energy_threshold + 30)
+                    # Cap threshold: quiet mics need low threshold to detect speech
+                    # ambient + 30 but never above 200
+                    rec.energy_threshold = min(200, max(50, rec.energy_threshold + 30))
                     print(f"[JARVIS] Mic calibrated — threshold: {rec.energy_threshold:.0f}")
 
                     while True:
@@ -1093,7 +1094,7 @@ class JarvisLive:
                 mic = sr.Microphone()
                 with mic as source:
                     rec.adjust_for_ambient_noise(source, duration=1.5)
-                    rec.energy_threshold = max(50, rec.energy_threshold + 30)
+                    rec.energy_threshold = min(200, max(50, rec.energy_threshold + 30))
                     print(f"[JARVIS] Google STT calibrated — threshold: {rec.energy_threshold:.0f}")
 
                     while True:
