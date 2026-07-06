@@ -1,7 +1,10 @@
 """
-tts.py — ElevenLabs TTS engine for JARVIS
-Streams audio from ElevenLabs directly into sounddevice output.
-Falls back to a simple print if ElevenLabs is unavailable.
+tts.py — TTS engine for JARVIS
+Primary  : ElevenLabs (streaming PCM, high quality)
+Fallback : Windows SAPI via win32com (free, built-in, no quota)
+
+Automatically switches to SAPI when ElevenLabs returns quota_exceeded.
+Switches back to ElevenLabs as soon as it works again.
 """
 import json
 import threading
@@ -10,9 +13,7 @@ import sys
 from pathlib import Path
 
 import sounddevice as sd
-import numpy as np
 
-# ── Config ────────────────────────────────────────────────────────────────────
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -21,7 +22,7 @@ def _get_base_dir() -> Path:
 BASE_DIR        = _get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
-SAMPLE_RATE = 22050   # ElevenLabs PCM output rate
+SAMPLE_RATE = 22050
 CHANNELS    = 1
 CHUNK_SIZE  = 4096
 
@@ -39,86 +40,100 @@ def _load_el_config() -> tuple[str, str]:
         return "", ""
 
 
-# ── ElevenLabs streaming TTS ─────────────────────────────────────────────────
+def _sapi_speak(text: str):
+    """Windows built-in TTS via SAPI — free, no quota, works offline."""
+    try:
+        from win32com.client import Dispatch
+        sapi = Dispatch("SAPI.SpVoice")
+        sapi.Rate = 1      # slightly faster than default
+        sapi.Volume = 100
+        sapi.Speak(text)
+    except Exception as e:
+        print(f"[TTS] SAPI error: {e} — printing instead")
+        print(f"JARVIS: {text}")
+
+
 class ElevenLabsTTS:
     """
-    Thread-safe TTS engine.
-    Streams MP3/PCM audio from ElevenLabs and plays it via sounddevice.
-    A serial queue ensures responses never overlap.
+    Thread-safe TTS engine with automatic SAPI fallback.
+    Quota errors are caught and SAPI is used transparently.
     """
 
     def __init__(self, on_speaking_change=None):
         self._api_key, self._voice_id = _load_el_config()
-        self._on_speaking_change = on_speaking_change   # callback(bool)
-        self._q: queue.Queue = queue.Queue()
+        self._on_speaking_change      = on_speaking_change
+        self._q: queue.Queue          = queue.Queue()
+        self._el_available            = bool(self._api_key and self._voice_id)
+        self._quota_exceeded          = False   # set True on quota error
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
-        self._available = bool(self._api_key and self._voice_id)
-        if self._available:
+
+        if self._el_available:
             print(f"[TTS] OK ElevenLabs ready -- voice: {self._voice_id}")
         else:
-            print("[TTS] WARNING ElevenLabs not configured -- using silent fallback")
-
-    # public -----------------------------------------------------------------
+            print("[TTS] ElevenLabs not configured -- using SAPI fallback")
 
     def speak(self, text: str):
-        """Queue text for speech. Non-blocking."""
         text = (text or "").strip()
         if not text:
             return
         self._q.put(text)
 
     def stop(self):
-        """Signal worker to stop."""
         self._q.put(None)
-
-    # internal ---------------------------------------------------------------
 
     def _run(self):
         while True:
             item = self._q.get()
             if item is None:
                 break
-            # Play immediately — sentences arrive one at a time now
             self._play(item)
 
     def _play(self, text: str):
-        if not self._available:
-            print(f"[TTS] (no voice) {text}")
-            return
-
         self._set_speaking(True)
         try:
-            from elevenlabs import ElevenLabs
-            client = ElevenLabs(api_key=self._api_key)
+            # Use ElevenLabs if available and quota not exceeded
+            if self._el_available and not self._quota_exceeded:
+                try:
+                    self._play_elevenlabs(text)
+                    return
+                except Exception as e:
+                    err = str(e).lower()
+                    if "quota_exceeded" in err or "quota exceeded" in err or "0 credits" in err:
+                        self._quota_exceeded = True
+                        print("[TTS] ElevenLabs quota exhausted — switching to SAPI")
+                    else:
+                        print(f"[TTS] ElevenLabs error: {str(e)[:120]}")
 
-            # Request PCM_22050 so we don't need an MP3 decoder
-            audio_iter = client.text_to_speech.convert(
-                voice_id=self._voice_id,
-                text=text,
-                model_id="eleven_flash_v2_5",
-                output_format="pcm_22050",
-            )
+            # SAPI fallback
+            _sapi_speak(text)
 
-            stream = sd.RawOutputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-            )
-            stream.start()
-            try:
-                for chunk in audio_iter:
-                    if chunk:
-                        stream.write(chunk)
-            finally:
-                stream.stop()
-                stream.close()
-
-        except Exception as e:
-            print(f"[TTS] ERROR ElevenLabs error: {e}")
         finally:
             self._set_speaking(False)
+
+    def _play_elevenlabs(self, text: str):
+        from elevenlabs import ElevenLabs
+        client     = ElevenLabs(api_key=self._api_key)
+        audio_iter = client.text_to_speech.convert(
+            voice_id=self._voice_id,
+            text=text,
+            model_id="eleven_flash_v2_5",
+            output_format="pcm_22050",
+        )
+        stream = sd.RawOutputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="int16",
+            blocksize=CHUNK_SIZE,
+        )
+        stream.start()
+        try:
+            for chunk in audio_iter:
+                if chunk:
+                    stream.write(chunk)
+        finally:
+            stream.stop()
+            stream.close()
 
     def _set_speaking(self, value: bool):
         if self._on_speaking_change:
@@ -128,7 +143,7 @@ class ElevenLabsTTS:
                 pass
 
 
-# ── Module-level singleton ────────────────────────────────────────────────────
+# ── Module-level singleton ─────────────────────────────────────────────────────
 _tts_instance: ElevenLabsTTS | None = None
 _lock = threading.Lock()
 
@@ -142,5 +157,4 @@ def get_tts(on_speaking_change=None) -> ElevenLabsTTS:
 
 
 def speak(text: str):
-    """Module-level convenience function."""
     get_tts().speak(text)

@@ -440,10 +440,8 @@ class JarvisLive:
         client = _make_client()
         loop   = asyncio.get_event_loop()
 
-        # Build system prompt and tools ONCE — not every turn
-        sys_prompt  = self._build_config()["system"]
-        sys_messages = [{"role": "system", "content": sys_prompt}]
-        conversation = list(getattr(self, "_startup_context", []))
+        # Conversation starts empty — startup briefing is a spoken event, not chat history
+        conversation = []
         full_out_log = []
 
         # Build OpenAI tool list once — reused for every turn
@@ -481,8 +479,31 @@ class JarvisLive:
             tool_calls_raw: dict = {}
             model_name = _get_nvidia_model()
 
-            # Rebuild system prompt each turn so memory changes are always reflected
-            current_sys = self._build_config()["system"]
+            # Build a clean runtime system prompt — excludes startup briefing instructions
+            # so JARVIS doesn't repeat the greeting/news on every conversation turn
+            memory     = load_memory()
+            mem_str    = format_memory_for_prompt(memory)
+            base_prompt = _load_system_prompt()
+            from datetime import datetime
+            now = datetime.now()
+            time_ctx = (
+                f"[CURRENT DATE & TIME]\nRight now it is: "
+                f"{now.strftime('%A, %B %d, %Y — %I:%M %p')}\n\n"
+            )
+            # Strip the STARTUP BRIEFING block so it only fires once at launch
+            import re as _re2
+            clean_prompt = _re2.sub(
+                r"STARTUP BRIEFING.*?(?=REAL-TIME DATA|RULES:|$)",
+                "",
+                base_prompt,
+                flags=_re2.DOTALL
+            ).strip()
+            parts = [time_ctx]
+            if mem_str:
+                parts.append(mem_str)
+            parts.append(clean_prompt)
+            current_sys = "\n".join(parts)
+
             updated_messages = [{"role": "system", "content": current_sys}] + [
                 m for m in messages if m.get("role") != "system"
             ]
@@ -578,7 +599,7 @@ class JarvisLive:
 
                 try:
                     while True:
-                        messages_snap = sys_messages + list(conversation)
+                        messages_snap = list(conversation)  # system prompt built inside _stream_and_speak
 
                         # Stream response
                         final_text, tool_calls = await loop.run_in_executor(
@@ -910,7 +931,13 @@ class JarvisLive:
                         except sr.UnknownValueError:
                             pass  # unintelligible audio — keep listening
                         except Exception as e:
-                            print(f"[JARVIS] Scribe error: {e}")
+                            err_s = str(e).lower()
+                            if "quota_exceeded" in err_s or "0 credits" in err_s or "quota exceeded" in err_s:
+                                print("[JARVIS] ElevenLabs Scribe quota exhausted — falling back to Google STT")
+                                self.ui.write_log("SYS: Scribe quota used up — switching to Google STT")
+                                # Exit this loop so Google STT takes over
+                                return
+                            print(f"[JARVIS] Scribe error: {str(e)[:80]}")
                             _time.sleep(0.5)
 
             except Exception as e:
@@ -918,6 +945,9 @@ class JarvisLive:
                 self.ui.write_log(f"SYS: Mic error — {e}")
 
         await loop.run_in_executor(None, _transcribe_loop)
+        # If we get here, Scribe failed/quota exceeded — use Google STT
+        print("[JARVIS] Falling back to Google STT")
+        await self._listen_audio_google()
 
     async def _listen_audio_google(self):
         """Fallback: Google STT when ElevenLabs key is absent."""
