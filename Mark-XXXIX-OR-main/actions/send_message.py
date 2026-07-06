@@ -87,9 +87,21 @@ def _send_instagram(receiver: str, message: str) -> str:
     Steps: Open Chrome → Go to instagram.com/direct → Search contact → Send
     """
     try:
-        import webbrowser
+        import json, sys
+        from pathlib import Path
+        _cfg_path = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
+        try:
+            _browser = json.loads(_cfg_path.read_text(encoding="utf-8")).get("default_browser", "").strip()
+        except Exception:
+            _browser = ""
 
-        webbrowser.open("https://www.instagram.com/direct/new/")
+        if _browser in ("msedge", "edge"):
+            import subprocess
+            subprocess.Popen(["msedge", "https://www.instagram.com/direct/new/"],
+                             shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            import webbrowser
+            webbrowser.open("https://www.instagram.com/direct/new/")
         time.sleep(3.5)
 
         pyautogui.write(receiver, interval=0.05)

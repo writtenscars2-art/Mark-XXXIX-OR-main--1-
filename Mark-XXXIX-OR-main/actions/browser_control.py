@@ -4,12 +4,36 @@ import concurrent.futures
 import platform
 import shutil
 import subprocess
+import json
+import sys
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 
+def _get_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent.parent
+
+_CONFIG_PATH = _get_base_dir() / "config" / "api_keys.json"
+
+
+def _preferred_browser() -> str:
+    """Return the browser configured in api_keys.json, or empty string."""
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        return data.get("default_browser", "").strip().lower()
+    except Exception:
+        return ""
+
+
 def _get_default_browser_id() -> str:
-    """Returns raw default browser identifier string for current OS."""
+    """Returns browser identifier — config preference overrides registry."""
+    # Config preference takes priority
+    pref = _preferred_browser()
+    if pref:
+        return pref
+
     system = platform.system()
     try:
         if system == "Windows":
