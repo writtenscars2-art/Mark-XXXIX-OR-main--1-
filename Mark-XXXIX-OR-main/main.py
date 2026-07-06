@@ -141,7 +141,7 @@ TOOL_DECLARATIONS = [
     {"name": "reminder",          "description": "Sets a Windows Task Scheduler reminder.", "parameters": {"type": "OBJECT", "properties": {"date": {"type": "STRING"}, "time": {"type": "STRING"}, "message": {"type": "STRING"}}, "required": ["date", "time", "message"]}},
     {"name": "youtube_video",     "description": "Plays, summarizes, or shows trending YouTube videos.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "query": {"type": "STRING"}, "save": {"type": "BOOLEAN"}, "region": {"type": "STRING"}, "url": {"type": "STRING"}}, "required": []}},
     {"name": "screen_process",    "description": "Captures screen or webcam and analyzes with AI vision. Returns a spoken description. Call when user asks what's on screen, describes what they see, or wants camera analysis.", "parameters": {"type": "OBJECT", "properties": {"angle": {"type": "STRING", "description": "'screen' for display, 'camera' for webcam. Default: screen"}, "text": {"type": "STRING", "description": "Question or instruction about the image"}}, "required": ["text"]}},
-    {"name": "computer_settings", "description": "Controls PC: volume (up/down/mute/set/get), brightness (up/down/set/get), WiFi toggle, screenshots, window management (close/minimize/maximize/snap/fullscreen), dark mode, shutdown/restart, scroll, zoom, lock screen, file explorer, task manager.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING", "description": "volume_up|volume_down|mute|volume_set|get_volume|brightness_up|brightness_down|brightness_set|get_brightness|screenshot|lock_screen|shutdown|restart|dark_mode|toggle_wifi|fullscreen|minimize|maximize|snap_left|snap_right|close_app|task_manager|file_explorer|open_settings|scroll_up|scroll_down|zoom_in|zoom_out|new_tab|close_tab|refresh_page|go_back|go_forward|copy|paste|undo|redo|select_all|save"}, "description": {"type": "STRING"}, "value": {"type": "STRING", "description": "For volume_set/brightness_set: 0-100. For type_text: text to type. For press_key: key name."}}, "required": []}},
+    {"name": "computer_settings", "description": "Controls PC: volume, brightness, WiFi, screenshots, window management, dark mode, shutdown, restart, scroll, zoom, lock screen, file explorer, task manager. Use action field with values like volume_up, volume_down, mute, volume_set, get_volume, brightness_up, brightness_down, brightness_set, get_brightness, screenshot, lock_screen, shutdown, restart, dark_mode, toggle_wifi, fullscreen, minimize, maximize, close_app, scroll_up, scroll_down, new_tab, close_tab, refresh_page, copy, paste, save.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "description": {"type": "STRING"}, "value": {"type": "STRING", "description": "For set actions: the value (e.g. 75 for volume/brightness). For type: text to type."}}, "required": []}},
     {"name": "browser_control",   "description": "Controls browser: open URLs, search, click, scroll, fill forms, get page text.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "url": {"type": "STRING"}, "query": {"type": "STRING"}, "selector": {"type": "STRING"}, "text": {"type": "STRING"}, "description": {"type": "STRING"}, "direction": {"type": "STRING"}, "key": {"type": "STRING"}, "incognito": {"type": "BOOLEAN"}}, "required": ["action"]}},
     {"name": "file_controller",   "description": "Manages files/folders: list, read, write, create, delete, move, copy, rename, find, disk usage.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "path": {"type": "STRING"}, "destination": {"type": "STRING"}, "new_name": {"type": "STRING"}, "content": {"type": "STRING"}, "name": {"type": "STRING"}, "extension": {"type": "STRING"}, "count": {"type": "INTEGER"}}, "required": ["action"]}},
     {"name": "desktop_control",   "description": "Controls desktop: wallpaper, organize, clean, list, stats.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "path": {"type": "STRING"}, "url": {"type": "STRING"}, "mode": {"type": "STRING"}, "task": {"type": "STRING"}}, "required": ["action"]}},
@@ -564,67 +564,56 @@ class JarvisLive:
                 temperature = 1.0 if is_nemotron else 0.4
                 top_p       = 0.95 if is_nemotron else 1.0
 
-            buf       = ""
-            full_text = ""
-            tc_raw: dict = {}
+            # Use a state dict so inner functions can mutate without nonlocal
+            state = {"buf": "", "text": "", "tc": {}}
 
-            try:
-                stream = api_client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=tools_oai,
-                    tool_choice="auto",
-                    max_tokens=400,
-                    temperature=temperature,
-                    top_p=top_p,
-                    stream=True,
-                    **extra,
-                )
-            except Exception as e:
-                # Groq rate-limit → fall back to NVIDIA immediately
-                if use_groq and ("429" in str(e) or "rate" in str(e).lower()):
-                    print("[JARVIS] Groq rate limit — falling back to NVIDIA")
-                    api_client = client
-                    model      = fast_model
-                    stream = api_client.chat.completions.create(
-                        model=model, messages=messages, tools=tools_oai,
-                        tool_choice="auto", max_tokens=400,
-                        temperature=0.4, stream=True,
-                    )
-                else:
-                    raise
-
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-
+            def _process_chunk(delta):
                 if getattr(delta, "reasoning_content", None):
-                    continue
-
+                    return
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
-                        if idx not in tc_raw:
-                            tc_raw[idx] = {"id": "", "name": "", "arguments": ""}
+                        if idx not in state["tc"]:
+                            state["tc"][idx] = {"id": "", "name": "", "arguments": ""}
                         if tc.function:
                             if tc.function.name:
-                                tc_raw[idx]["name"] += tc.function.name
+                                state["tc"][idx]["name"] += tc.function.name
                             if tc.function.arguments:
-                                tc_raw[idx]["arguments"] += tc.function.arguments
-                        if tc.id and not tc_raw[idx]["id"]:
-                            tc_raw[idx]["id"] = tc.id
-
+                                state["tc"][idx]["arguments"] += tc.function.arguments
+                        if tc.id and not state["tc"][idx]["id"]:
+                            state["tc"][idx]["id"] = tc.id
                 if delta.content:
-                    buf       += delta.content
-                    full_text += delta.content
-                    sentences  = _re.split(r"(?<=[.!?])\s+", buf)
+                    state["buf"]  += delta.content
+                    state["text"] += delta.content
+                    sentences = _re.split(r"(?<=[.!?])\s+", state["buf"])
                     if len(sentences) > 1:
                         to_speak = " ".join(sentences[:-1]).strip()
                         if to_speak:
                             self.speak(to_speak)
-                        buf = sentences[-1]
+                        state["buf"] = sentences[-1]
 
+            try:
+                for chunk in stream:
+                    if chunk.choices:
+                        _process_chunk(chunk.choices[0].delta)
+            except Exception as _se:
+                _se_s = str(_se).lower()
+                if "failed_generation" in _se_s or "failed to call a function" in _se_s:
+                    print("[JARVIS] Tool generation failed — retrying without tools")
+                    state["buf"] = ""; state["text"] = ""; state["tc"] = {}
+                    plain = api_client.chat.completions.create(
+                        model=model, messages=messages,
+                        max_tokens=300, temperature=temperature, stream=True,
+                    )
+                    for chunk in plain:
+                        if chunk.choices:
+                            _process_chunk(chunk.choices[0].delta)
+                else:
+                    raise
+
+            buf       = state["buf"]
+            full_text = state["text"]
+            tc_raw    = state["tc"]
             if buf.strip():
                 self.speak(buf.strip())
 
