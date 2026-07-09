@@ -92,18 +92,32 @@ def _launch_windows(app_name: str) -> bool:
     if binary:
         try:
             _sp.Popen([binary], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-            time.sleep(1.0)
-            return True
+            time.sleep(1.2)
+            # Verify process actually started
+            if _is_running(app_name) or _is_running(binary):
+                return True
         except Exception:
             pass
 
     # 2. Try with shell=True (handles ms-settings:, shell URIs, etc.)
-    try:
-        _sp.Popen(app_name, shell=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-        time.sleep(1.5)
-        return True
-    except Exception:
-        pass
+    # Only use for known URI schemes — don't blindly return True
+    if app_name.startswith("ms-") or ":" in app_name:
+        try:
+            _sp.Popen(app_name, shell=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            time.sleep(1.0)
+            return True   # URI schemes can't be verified via process check
+        except Exception:
+            pass
+    else:
+        try:
+            proc = _sp.Popen(app_name, shell=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            time.sleep(1.5)
+            if proc.poll() is None:  # still running = likely opened fine
+                return True
+            if _is_running(app_name):
+                return True
+        except Exception:
+            pass
 
     # 3. Try pygetwindow — focus if already running
     try:
@@ -116,12 +130,12 @@ def _launch_windows(app_name: str) -> bool:
         pass
 
     # 4. Last resort: Start menu keyboard search
+    # Note: this cannot be verified — mark as "uncertain" via _UNCERTAIN sentinel
     try:
         import pyautogui
         pyautogui.PAUSE = 0.1
         pyautogui.press("win")
         time.sleep(0.8)
-        # Use clipboard paste instead of typewrite for reliable Unicode
         try:
             import pyperclip
             pyperclip.copy(app_name)
@@ -130,8 +144,12 @@ def _launch_windows(app_name: str) -> bool:
             pyautogui.write(app_name, interval=0.06)
         time.sleep(1.0)
         pyautogui.press("enter")
-        time.sleep(3.0)
-        return True
+        time.sleep(2.5)
+        # Try to confirm via process list
+        if _is_running(app_name):
+            return True
+        # Can't confirm but we tried — return None to signal "uncertain"
+        return None   # type: ignore
     except Exception as e:
         print(f"[open_app] Start menu fallback failed: {e}")
         return False
@@ -231,19 +249,26 @@ def open_app(
     try:
         success = launcher(normalized)
 
-        if success:
-            return f"Opened {app_name} successfully, sir."
+        if success is True:
+            return f"Opened {app_name}, boss."
 
+        if success is None:
+            # Uncertain — Start menu was used, can't fully confirm
+            return f"I launched {app_name} via Start menu, boss. It should be open."
+
+        # success is False — try original name
         if normalized != app_name:
-            success = launcher(app_name)
-            if success:
-                return f"Opened {app_name} successfully, sir."
+            success2 = launcher(app_name)
+            if success2 is True:
+                return f"Opened {app_name}, boss."
+            if success2 is None:
+                return f"I launched {app_name} via Start menu, boss. It should be open."
 
         return (
-            f"I tried to open {app_name}, sir, but couldn't confirm it launched. "
-            f"It may still be loading or might not be installed."
+            f"I could not open {app_name}, boss. "
+            f"It may not be installed or the name may be different."
         )
 
     except Exception as e:
         print(f"[open_app] ❌ {e}")
-        return f"Failed to open {app_name}, sir: {e}"
+        return f"Failed to open {app_name}, boss: {e}"

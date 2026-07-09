@@ -1028,12 +1028,20 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("J.A.R.V.I.S — MARK XXXIX")
         self.setMinimumSize(_MIN_W, _MIN_H)
-        self.resize(_DEFAULT_W, _DEFAULT_H)
 
-        screen = QApplication.primaryScreen().availableGeometry()
-        self.move(
-            (screen.width()  - _DEFAULT_W) // 2,
-            (screen.height() - _DEFAULT_H) // 2,
+        # ── Position: top-center of primary screen ─────────────────────────
+        screen     = QApplication.primaryScreen().availableGeometry()
+        win_w      = min(1100, screen.width() - 40)   # wide but never wider than screen
+        win_h      = min(680,  screen.height() - 60)   # tall enough for all panels
+        pos_x      = (screen.width()  - win_w) // 2    # horizontally centered
+        pos_y      = 0                                  # pinned to top of screen
+        self.resize(win_w, win_h)
+        self.move(pos_x, pos_y)
+
+        # Stay on top so user can always see JARVIS while working
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.WindowStaysOnTopHint
         )
 
         self.on_text_command  = None
@@ -1089,6 +1097,8 @@ class MainWindow(QMainWindow):
         sc_mute.activated.connect(self._toggle_mute)
         sc_full = QShortcut(QKeySequence("F11"), self)
         sc_full.activated.connect(self._toggle_fullscreen)
+        sc_pin = QShortcut(QKeySequence("F12"), self)
+        sc_pin.activated.connect(self._toggle_ontop)
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -1200,7 +1210,62 @@ class MainWindow(QMainWindow):
         self._date_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
         right_col.addWidget(self._date_lbl)
         lay.addLayout(right_col)
+
+        # ── Pin (always-on-top) toggle button ─────────────────────────────
+        self._pin_btn = QPushButton("📌")
+        self._pin_btn.setFixedSize(28, 28)
+        self._pin_btn.setToolTip("Toggle always-on-top (F12)")
+        self._pin_btn.setFont(QFont("Segoe UI Emoji", 12))
+        self._pin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pin_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {C.PRI_GHO};
+                border: 1px solid {C.PRI};
+                border-radius: 4px;
+                color: {C.PRI};
+            }}
+            QPushButton:hover {{ background: {C.BORDER_B}; }}
+        """)
+        self._pin_btn.clicked.connect(self._toggle_ontop)
+        self._ontop = True   # starts pinned
+        lay.addSpacing(8)
+        lay.addWidget(self._pin_btn)
+
         return w
+
+    def _toggle_ontop(self):
+        """Toggle the always-on-top window flag."""
+        self._ontop = not self._ontop
+        flags = self.windowFlags()
+        if self._ontop:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+            self._pin_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {C.PRI_GHO};
+                    border: 1px solid {C.PRI};
+                    border-radius: 4px;
+                    color: {C.PRI};
+                }}
+                QPushButton:hover {{ background: {C.BORDER_B}; }}
+            """)
+            self._pin_btn.setToolTip("Always-on-top: ON (click to disable)")
+        else:
+            flags &= ~Qt.WindowType.WindowStaysOnTopHint
+            self._pin_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent;
+                    border: 1px solid {C.BORDER};
+                    border-radius: 4px;
+                    color: {C.TEXT_DIM};
+                }}
+                QPushButton:hover {{ background: {C.PRI_GHO}; color: {C.PRI}; }}
+            """)
+            self._pin_btn.setToolTip("Always-on-top: OFF (click to enable)")
+        # Re-apply flags — window briefly hides/shows but keeps position
+        geo = self.geometry()
+        self.setWindowFlags(flags)
+        self.setGeometry(geo)
+        self.show()
 
     def _tick_clock(self):
         self._clock_lbl.setText(time.strftime("%H:%M:%S"))

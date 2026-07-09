@@ -1,6 +1,7 @@
 ﻿import asyncio
 import threading
 import json
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -134,26 +135,101 @@ def _update_memory_async(user_text: str, jarvis_text: str) -> None:
             print(f"[Memory] ⚠️ {e}")
 
 TOOL_DECLARATIONS = [
-    {"name": "open_app",          "description": "Opens any app, program or website on Windows.", "parameters": {"type": "OBJECT", "properties": {"app_name": {"type": "STRING", "description": "App name e.g. Chrome, Spotify"}}, "required": ["app_name"]}},
-    {"name": "web_search",        "description": "Searches the live web. Use for any current event, news, price, or fact.", "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}, "mode": {"type": "STRING"}, "items": {"type": "ARRAY", "items": {"type": "STRING"}}, "aspect": {"type": "STRING"}}, "required": ["query"]}},
-    {"name": "weather_report",    "description": "Gets real-time weather for any city — current conditions, temperature, humidity, wind, and optional 3-day forecast.", "parameters": {"type": "OBJECT", "properties": {"city": {"type": "STRING"}, "forecast": {"type": "boolean", "description": "true to include 3-day forecast"}, "units": {"type": "STRING", "description": "metric or imperial"}}, "required": ["city"]}},
-    {"name": "send_message",      "description": "Sends a message via WhatsApp, Telegram, etc.", "parameters": {"type": "OBJECT", "properties": {"receiver": {"type": "STRING"}, "message_text": {"type": "STRING"}, "platform": {"type": "STRING"}}, "required": ["receiver", "message_text", "platform"]}},
-    {"name": "reminder",          "description": "Sets a Windows Task Scheduler reminder.", "parameters": {"type": "OBJECT", "properties": {"date": {"type": "STRING"}, "time": {"type": "STRING"}, "message": {"type": "STRING"}}, "required": ["date", "time", "message"]}},
-    {"name": "youtube_video",     "description": "Plays, summarizes, or shows trending YouTube videos.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "query": {"type": "STRING"}, "save": {"type": "BOOLEAN"}, "region": {"type": "STRING"}, "url": {"type": "STRING"}}, "required": []}},
-    {"name": "screen_process",    "description": "Captures screen or webcam and analyzes with AI vision. Returns a spoken description. Call when user asks what's on screen, describes what they see, or wants camera analysis.", "parameters": {"type": "OBJECT", "properties": {"angle": {"type": "STRING", "description": "'screen' for display, 'camera' for webcam. Default: screen"}, "text": {"type": "STRING", "description": "Question or instruction about the image"}}, "required": ["text"]}},
-    {"name": "computer_settings", "description": "Controls PC: volume, brightness, WiFi, screenshots, window management, dark mode, shutdown, restart, scroll, zoom, lock screen, file explorer, task manager. Also handles: get_volume, get_brightness, device_info, system_info (returns OS, CPU, RAM, disk, uptime, IP).", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "description": {"type": "STRING"}, "value": {"type": "STRING", "description": "For set actions: the value (e.g. 75 for volume/brightness). For type: text to type."}}, "required": []}},
-    {"name": "browser_control",   "description": "Controls browser: open URLs, search, click, scroll, fill forms, get page text.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "url": {"type": "STRING"}, "query": {"type": "STRING"}, "selector": {"type": "STRING"}, "text": {"type": "STRING"}, "description": {"type": "STRING"}, "direction": {"type": "STRING"}, "key": {"type": "STRING"}, "incognito": {"type": "BOOLEAN"}}, "required": ["action"]}},
-    {"name": "file_controller",   "description": "Manages files/folders: list, read, write, create, delete, move, copy, rename, find, disk usage.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "path": {"type": "STRING"}, "destination": {"type": "STRING"}, "new_name": {"type": "STRING"}, "content": {"type": "STRING"}, "name": {"type": "STRING"}, "extension": {"type": "STRING"}, "count": {"type": "INTEGER"}}, "required": ["action"]}},
-    {"name": "desktop_control",   "description": "Controls desktop: wallpaper, organize, clean, list, stats.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "path": {"type": "STRING"}, "url": {"type": "STRING"}, "mode": {"type": "STRING"}, "task": {"type": "STRING"}}, "required": ["action"]}},
-    {"name": "code_helper",       "description": "Writes, edits, explains, runs or builds code.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "description": {"type": "STRING"}, "language": {"type": "STRING"}, "output_path": {"type": "STRING"}, "file_path": {"type": "STRING"}, "code": {"type": "STRING"}, "args": {"type": "STRING"}, "timeout": {"type": "INTEGER"}}, "required": ["action"]}},
-    {"name": "dev_agent",         "description": "Builds complete multi-file projects from scratch.", "parameters": {"type": "OBJECT", "properties": {"description": {"type": "STRING"}, "language": {"type": "STRING"}, "project_name": {"type": "STRING"}, "timeout": {"type": "INTEGER"}}, "required": ["description"]}},
-    {"name": "agent_task",        "description": "Executes complex multi-step tasks needing multiple tools. Not for single actions.", "parameters": {"type": "OBJECT", "properties": {"goal": {"type": "STRING"}, "priority": {"type": "STRING"}}, "required": ["goal"]}},
-    {"name": "computer_control",  "description": "Direct mouse/keyboard control: type, click, hotkeys, scroll, screenshot, find screen elements.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "text": {"type": "STRING"}, "x": {"type": "INTEGER"}, "y": {"type": "INTEGER"}, "keys": {"type": "STRING"}, "key": {"type": "STRING"}, "direction": {"type": "STRING"}, "amount": {"type": "INTEGER"}, "seconds": {"type": "NUMBER"}, "title": {"type": "STRING"}, "description": {"type": "STRING"}, "path": {"type": "STRING"}}, "required": ["action"]}},
-    {"name": "game_updater",      "description": "THE ONLY tool for Steam or Epic Games: update, install, list, schedule. Never use web_search for games.", "parameters": {"type": "OBJECT", "properties": {"action": {"type": "STRING"}, "platform": {"type": "STRING"}, "game_name": {"type": "STRING"}, "app_id": {"type": "STRING"}, "hour": {"type": "INTEGER"}, "minute": {"type": "INTEGER"}, "shutdown_when_done": {"type": "BOOLEAN"}}, "required": []}},
-    {"name": "flight_finder",     "description": "Searches Google Flights and speaks best options.", "parameters": {"type": "OBJECT", "properties": {"origin": {"type": "STRING"}, "destination": {"type": "STRING"}, "date": {"type": "STRING"}, "return_date": {"type": "STRING"}, "passengers": {"type": "INTEGER"}, "cabin": {"type": "STRING"}, "save": {"type": "BOOLEAN"}}, "required": ["origin", "destination", "date"]}},
-    {"name": "file_processor",    "description": "Processes uploaded files: images, PDFs, Word, Excel, CSV, JSON, code, audio, video, archives, presentations.", "parameters": {"type": "OBJECT", "properties": {"file_path": {"type": "STRING"}, "action": {"type": "STRING"}, "instruction": {"type": "STRING"}, "format": {"type": "STRING"}, "width": {"type": "INTEGER"}, "height": {"type": "INTEGER"}, "quality": {"type": "INTEGER"}, "save": {"type": "BOOLEAN"}}, "required": []}},
-    {"name": "shutdown_jarvis",   "description": "Shuts down JARVIS completely. Call when user says goodbye or wants to exit.", "parameters": {"type": "OBJECT", "properties": {}}},
-    {"name": "save_memory",       "description": "Silently saves personal facts about the user to long-term memory. Call when user reveals name, job, preferences, plans.", "parameters": {"type": "OBJECT", "properties": {"category": {"type": "STRING"}, "key": {"type": "STRING"}, "value": {"type": "STRING"}}, "required": ["category", "key", "value"]}},
+    {
+        "name": "open_app",
+        "description": "Opens any desktop application by name (e.g. Notepad, Spotify, VS Code, Calculator). Use this for launching installed programs, NOT for opening websites in a browser.",
+        "parameters": {"type": "object", "properties": {"app_name": {"type": "string", "description": "Exact app name e.g. 'Notepad', 'Spotify', 'Chrome'"}}, "required": ["app_name"]}
+    },
+    {
+        "name": "web_search",
+        "description": "Searches the live web for current information: news, prices, scores, events, facts. Use this when the answer requires up-to-date data.",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "mode": {"type": "string"}, "items": {"type": "array", "items": {"type": "string"}}, "aspect": {"type": "string"}}, "required": ["query"]}
+    },
+    {
+        "name": "weather_report",
+        "description": "Gets real-time weather for any city: temperature, humidity, wind, conditions. Optionally includes 3-day forecast.",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}, "forecast": {"type": "boolean"}, "units": {"type": "string", "description": "metric or imperial"}}, "required": ["city"]}
+    },
+    {
+        "name": "send_message",
+        "description": "Sends a chat message via WhatsApp, Telegram, or similar messaging apps.",
+        "parameters": {"type": "object", "properties": {"receiver": {"type": "string"}, "message_text": {"type": "string"}, "platform": {"type": "string"}}, "required": ["receiver", "message_text", "platform"]}
+    },
+    {
+        "name": "reminder",
+        "description": "Sets a timed reminder using Windows Task Scheduler. User must specify a date, time, and message.",
+        "parameters": {"type": "object", "properties": {"date": {"type": "string"}, "time": {"type": "string"}, "message": {"type": "string"}}, "required": ["date", "time", "message"]}
+    },
+    {
+        "name": "youtube_video",
+        "description": "Plays, searches, summarizes or shows trending YouTube videos.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "query": {"type": "string"}, "save": {"type": "boolean"}, "region": {"type": "string"}, "url": {"type": "string"}}, "required": []}
+    },
+    {
+        "name": "screen_process",
+        "description": "Captures and analyzes what is currently on screen or from the webcam using AI vision. Use when user asks 'what's on my screen', 'what do you see', or wants visual analysis.",
+        "parameters": {"type": "object", "properties": {"angle": {"type": "string", "description": "screen or camera"}, "text": {"type": "string", "description": "Question about the image"}}, "required": ["text"]}
+    },
+    {
+        "name": "computer_settings",
+        "description": "Controls PC system settings: volume up/down/set/mute, brightness up/down/set, WiFi on/off, take screenshot, dark mode, shutdown, restart, sleep, lock screen, open file explorer, open task manager, get device info, get system info.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "e.g. volume_up, volume_down, volume_set, brightness_set, screenshot, dark_mode, shutdown, restart, wifi_on, device_info, system_info"}, "value": {"type": "string", "description": "Numeric value for set actions"}}, "required": []}
+    },
+    {
+        "name": "browser_control",
+        "description": "Controls the web browser: open a specific URL, search the web in browser, click elements, scroll, fill forms. Use when user says 'open website', 'go to', 'browse to', 'search in browser'.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "go_to, search, click, scroll, type, press, get_text, close"}, "url": {"type": "string"}, "query": {"type": "string"}, "selector": {"type": "string"}, "text": {"type": "string"}, "direction": {"type": "string"}, "key": {"type": "string"}, "incognito": {"type": "boolean"}}, "required": ["action"]}
+    },
+    {
+        "name": "file_controller",
+        "description": "Manages files and folders on disk: list, read, write, create, delete, move, copy, rename, find files, check disk usage.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "path": {"type": "string"}, "destination": {"type": "string"}, "new_name": {"type": "string"}, "content": {"type": "string"}, "name": {"type": "string"}, "extension": {"type": "string"}, "count": {"type": "integer"}}, "required": ["action"]}
+    },
+    {
+        "name": "desktop_control",
+        "description": "Controls the Windows desktop: change wallpaper, organize or clean desktop icons, list desktop items.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "path": {"type": "string"}, "url": {"type": "string"}, "mode": {"type": "string"}, "task": {"type": "string"}}, "required": ["action"]}
+    },
+    {
+        "name": "code_helper",
+        "description": "Writes, edits, explains, runs or debugs code in any programming language.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "description": {"type": "string"}, "language": {"type": "string"}, "output_path": {"type": "string"}, "file_path": {"type": "string"}, "code": {"type": "string"}, "args": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["action"]}
+    },
+    {
+        "name": "dev_agent",
+        "description": "Builds complete multi-file software projects from scratch given a description.",
+        "parameters": {"type": "object", "properties": {"description": {"type": "string"}, "language": {"type": "string"}, "project_name": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["description"]}
+    },
+    {
+        "name": "agent_task",
+        "description": "Executes a complex multi-step goal that requires planning and using several tools in sequence. Only use for tasks that clearly need multiple different tools.",
+        "parameters": {"type": "object", "properties": {"goal": {"type": "string"}, "priority": {"type": "string"}}, "required": ["goal"]}
+    },
+    {
+        "name": "computer_control",
+        "description": "Direct mouse and keyboard automation: move mouse, click at coordinates, type text, press hotkeys (e.g. Ctrl+C), scroll wheel, take screenshot. Use when the user wants to interact with a specific location on screen.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "click, type, hotkey, scroll, screenshot, move"}, "text": {"type": "string"}, "x": {"type": "integer"}, "y": {"type": "integer"}, "keys": {"type": "string"}, "key": {"type": "string"}, "direction": {"type": "string"}, "amount": {"type": "integer"}, "seconds": {"type": "number"}, "title": {"type": "string"}, "path": {"type": "string"}}, "required": ["action"]}
+    },
+    {
+        "name": "game_updater",
+        "description": "THE ONLY tool for Steam or Epic Games tasks: update games, install games, list installed games, schedule updates.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "platform": {"type": "string"}, "game_name": {"type": "string"}, "app_id": {"type": "string"}, "hour": {"type": "integer"}, "minute": {"type": "integer"}, "shutdown_when_done": {"type": "boolean"}}, "required": []}
+    },
+    {
+        "name": "flight_finder",
+        "description": "Searches for flights on Google Flights and returns the best options.",
+        "parameters": {"type": "object", "properties": {"origin": {"type": "string"}, "destination": {"type": "string"}, "date": {"type": "string"}, "return_date": {"type": "string"}, "passengers": {"type": "integer"}, "cabin": {"type": "string"}, "save": {"type": "boolean"}}, "required": ["origin", "destination", "date"]}
+    },
+    {
+        "name": "file_processor",
+        "description": "Processes uploaded files: read/analyze images, PDFs, Word docs, Excel, CSV, JSON, audio, video, archives.",
+        "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "action": {"type": "string"}, "instruction": {"type": "string"}, "format": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"}, "quality": {"type": "integer"}, "save": {"type": "boolean"}}, "required": []}
+    },
+    {
+        "name": "save_memory",
+        "description": "Saves a personal fact about the user to long-term memory (name, preferences, job, plans). Call silently alongside a response.",
+        "parameters": {"type": "object", "properties": {"category": {"type": "string"}, "key": {"type": "string"}, "value": {"type": "string"}}, "required": ["category", "key", "value"]}
+    },
 ]
 
 
@@ -163,7 +239,6 @@ def _split_sentences(text: str) -> tuple[list[str], str]:
     Split text into complete sentences and a remaining incomplete fragment.
     Returns (complete_sentences, remainder).
     """
-    import re
     # Split on sentence-ending punctuation followed by space or end
     parts = re.split(r'(?<=[.!?])\s+', text.strip())
     if not parts:
@@ -196,7 +271,7 @@ def _format_news_for_speech(raw: str) -> str:
         m = re.match(r"^\d+\.\s+(.+)", line)
         if m:
             title = re.sub(r"\[\d{4}-.*?\]", "", m.group(1))   # strip date tag
-            title = re.sub(r"—\s*\S+$", "", title).strip()        # strip source
+            title = re.sub(r"—\s*\S+$", "", title).strip()       # strip source
             if len(title) > 15:
                 stories.append(title)
         if len(stories) >= 2:
@@ -397,14 +472,25 @@ class JarvisLive:
                 result = r or "Done."
             elif tool_name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
-                self._tts.speak("Goodbye, sir.")
+                self._tts.speak("Goodbye, boss.")
 
                 def _shutdown():
-                    import time, sys, os
-                    time.sleep(2)
-                    os._exit(0)
+                    import time as _t
+                    _t.sleep(2.5)
+                    # Use QApplication.quit() on the Qt main thread — most reliable way
+                    try:
+                        from PyQt6.QtWidgets import QApplication
+                        app = QApplication.instance()
+                        if app:
+                            app.quit()
+                            return
+                    except Exception:
+                        pass
+                    # Hard fallback
+                    import os as _os
+                    _os._exit(0)
 
-                threading.Thread(target=_shutdown, daemon=True).start()
+                threading.Thread(target=_shutdown, daemon=False).start()
             else:
                 result = f"Unknown tool: {tool_name}"
 
@@ -432,12 +518,11 @@ class JarvisLive:
     async def _receive_audio(self):
         """
         Main conversation loop.
-        - Uses meta/llama-3.3-70b-instruct by default (fast, ~1-2s TTFT)
+        - Uses Groq llama-3.3-70b-versatile by default (fast, ~0.3-0.8s TTFT)
         - Switches to Nemotron+thinking only when boss explicitly requests deep analysis
         - Boss can cancel deep analysis mode at any time
         - System prompt cached and refreshed every 30 turns (not rebuilt every call)
         """
-        import re as _re
         import json as _json
         from datetime import datetime as _dt
 
@@ -448,9 +533,11 @@ class JarvisLive:
         full_out_log      = []
         deep_mode         = False   # True = use Nemotron+thinking for this turn
         _deep_persistent  = False   # True = stay in deep mode until cancelled
-        _sys_cache        = None    # cached (system_str, turn_count)
+        _sys_cache        = None    # cached system prompt string
         _sys_refresh      = 30      # rebuild system prompt every N turns
         _turn_count       = 0
+        _startup_injected = False   # inject startup context once on first user message
+        _world_monitor_asked = True  # True = briefing has asked about World Monitor
 
         # Keywords that trigger deep analysis mode
         _DEEP_ON = {
@@ -475,9 +562,9 @@ class JarvisLive:
                 f"Right now it is: {now.strftime('%A, %B %d, %Y — %I:%M %p')}\n\n"
             )
             # Strip startup briefing block — only runs at launch, not in conversation
-            clean = _re.sub(
+            clean = re.sub(
                 r"STARTUP BRIEFING.*?(?=REAL-TIME DATA|RULES:|$)",
-                "", base_prompt, flags=_re.DOTALL
+                "", base_prompt, flags=re.DOTALL
             ).strip()
             parts = [time_ctx]
             if mem_str:
@@ -488,24 +575,27 @@ class JarvisLive:
         # Build system prompt once at startup
         _sys_cache = _build_sys()
 
-        # Build OpenAI-format tool list once — never changes at runtime
+        # Build OpenAI-format tool list once — schemas are already lowercase, just reformat
         tools_oai = []
         for td in TOOL_DECLARATIONS:
             props       = td.get("parameters", {}).get("properties", {})
             clean_props = {}
             for k, v in props.items():
                 ptype = v.get("type", "string").lower()
-                if ptype not in ("object", "array", "integer", "number", "boolean"):
+                # Only allow JSON Schema primitive types
+                if ptype not in ("object", "array", "integer", "number", "boolean", "string"):
                     ptype = "string"
-                prop = {**v, "type": ptype}
-                # Fix nested items type for array properties (Groq strict validation)
+                prop = dict(v)      # preserve description and other fields
+                prop["type"] = ptype
+                # Fix nested array items type
                 if ptype == "array" and "items" in prop:
                     nested = prop["items"]
                     if isinstance(nested, dict) and "type" in nested:
                         itype = nested["type"].lower()
-                        if itype not in ("object", "array", "integer", "number", "boolean", "null"):
+                        if itype not in ("object", "array", "integer", "number", "boolean", "string"):
                             itype = "string"
-                        prop["items"] = {**nested, "type": itype}
+                        prop["items"] = dict(nested)
+                        prop["items"]["type"] = itype
                 clean_props[k] = prop
             tools_oai.append({
                 "type": "function",
@@ -522,22 +612,21 @@ class JarvisLive:
 
         def _call_api(messages: list, use_deep: bool) -> tuple[str, list]:
             """
-            Primary: Groq (sub-1s latency, free, OpenAI-compatible).
+            Primary: Groq llama-3.3-70b-versatile (sub-1s, best tool calling on Groq).
             Fallback: NVIDIA NIM (if Groq key missing or rate-limited).
             Deep mode: NVIDIA Nemotron with thinking (only when use_deep=True).
             """
-            cfg_data = _json.load(open(API_CONFIG_PATH, encoding="utf-8"))
-
+            with open(API_CONFIG_PATH, encoding="utf-8") as _f:
+                cfg_data = _json.load(_f)
             groq_key   = cfg_data.get("groq_api_key",    "").strip()
             groq_model = cfg_data.get("groq_model",       "llama-3.3-70b-versatile")
             fast_model = cfg_data.get("nvidia_model",     "meta/llama-3.3-70b-instruct")
             deep_model = cfg_data.get("nvidia_model_deep", fast_model)
 
-            # Decide which client + model to use
             use_groq = (
-                groq_key
+                bool(groq_key)
                 and groq_key != "YOUR_GROQ_KEY_HERE"
-                and not use_deep   # deep mode always uses NVIDIA Nemotron
+                and not use_deep
             )
 
             if use_groq:
@@ -545,15 +634,17 @@ class JarvisLive:
                     base_url="https://api.groq.com/openai/v1",
                     api_key=groq_key,
                 )
-                model = groq_model
-                extra = {}
-                temperature = 0.3   # lower = more accurate, less random
-                top_p       = 0.9
+                model       = groq_model
+                temperature = 0.1    # very low = maximally deterministic tool selection
+                top_p       = 1.0
+                extra       = {}
             else:
-                api_client  = client   # existing NVIDIA client
+                api_client  = client
                 model       = deep_model if use_deep else fast_model
                 is_nemotron = "nemotron" in model.lower()
-                extra = {}
+                temperature = 1.0 if is_nemotron else 0.3
+                top_p       = 0.95 if is_nemotron else 1.0
+                extra       = {}
                 if is_nemotron:
                     extra = {
                         "extra_body": {
@@ -561,10 +652,7 @@ class JarvisLive:
                             "reasoning_budget": 4096,
                         }
                     }
-                temperature = 1.0 if is_nemotron else 0.4
-                top_p       = 0.95 if is_nemotron else 1.0
 
-            # Use a state dict so inner functions can mutate without nonlocal
             state = {"buf": "", "text": "", "tc": {}}
 
             def _process_chunk(delta):
@@ -585,66 +673,134 @@ class JarvisLive:
                 if delta.content:
                     state["buf"]  += delta.content
                     state["text"] += delta.content
-                    sentences = _re.split(r"(?<=[.!?])\s+", state["buf"])
+                    sentences = re.split(r"(?<=[.!?])\s+", state["buf"])
                     if len(sentences) > 1:
                         to_speak = " ".join(sentences[:-1]).strip()
                         if to_speak:
                             self.speak(to_speak)
                         state["buf"] = sentences[-1]
 
-            # Create the stream — this was missing after the patch
-            try:
-                stream = api_client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=tools_oai,
-                    tool_choice="auto",
-                    max_tokens=400,
-                    temperature=temperature,
-                    top_p=top_p,
-                    stream=True,
-                    **extra,
-                )
-            except Exception as e:
-                if use_groq and ("429" in str(e) or "rate" in str(e).lower()):
-                    print("[JARVIS] Groq rate limit — falling back to NVIDIA")
-                    api_client = client
-                    model      = fast_model
-                    stream = api_client.chat.completions.create(
-                        model=model, messages=messages, tools=tools_oai,
-                        tool_choice="auto", max_tokens=400,
-                        temperature=0.4, stream=True,
-                    )
-                else:
-                    raise
+            # Groq extra kwargs for better tool calling reliability
+            groq_extra = {}
+            if use_groq:
+                groq_extra["parallel_tool_calls"] = False   # one tool at a time = fewer errors
 
-            try:
-                for chunk in stream:
-                    if chunk.choices:
-                        _process_chunk(chunk.choices[0].delta)
-            except Exception as _se:
-                _se_s = str(_se).lower()
-                if "failed_generation" in _se_s or "failed to call a function" in _se_s:
-                    print("[JARVIS] Tool generation failed — retrying without tools")
-                    state["buf"] = ""; state["text"] = ""; state["tc"] = {}
-                    plain = api_client.chat.completions.create(
-                        model=model, messages=messages,
-                        max_tokens=300, temperature=temperature, stream=True,
+            # For Groq: use non-streaming (more reliable tool calling, still fast ~0.5s)
+            # For NVIDIA: use streaming (better for long responses)
+
+            if use_groq:
+                # Non-streaming Groq call — most reliable for tool selection
+                try:
+                    response = api_client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tools=tools_oai,
+                        tool_choice="auto",
+                        max_tokens=600,
+                        temperature=temperature,
+                        top_p=top_p,
+                        stream=False,
+                        **groq_extra,
                     )
-                    for chunk in plain:
+                    choice = response.choices[0] if response.choices else None
+                    if choice:
+                        msg = choice.message
+                        if msg.content:
+                            state["text"] = msg.content
+                            # Speak sentence by sentence
+                            sentences = re.split(r"(?<=[.!?])\s+", msg.content.strip())
+                            for s in sentences:
+                                if s.strip():
+                                    self.speak(s.strip())
+                        if msg.tool_calls:
+                            for i, tc in enumerate(msg.tool_calls):
+                                state["tc"][i] = {
+                                    "id":        tc.id or f"call_{i}",
+                                    "name":      tc.function.name or "",
+                                    "arguments": tc.function.arguments or "{}",
+                                }
+                except Exception as e:
+                    err_s = str(e).lower()
+                    if "429" in str(e) or "rate" in err_s:
+                        print("[JARVIS] Groq rate limit — falling back to NVIDIA")
+                        use_groq    = False
+                        api_client  = client
+                        model       = fast_model
+                        temperature = 0.3
+                        top_p       = 1.0
+                        extra       = {}
+                    elif "tool_use_failed" in err_s or "failed to call a function" in err_s or "tool call validation" in err_s:
+                        # llama-3.3-70b-versatile known bug: generates <function=name{args}> XML
+                        # instead of JSON tool calls. Retry as plain text — no tools.
+                        print(f"[JARVIS] Groq bad tool format — retrying as plain text")
+                        try:
+                            plain = api_client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                max_tokens=300,
+                                temperature=0.1,
+                                stream=False,
+                            )
+                            pc = plain.choices[0] if plain.choices else None
+                            if pc and pc.message.content:
+                                state["text"] = pc.message.content
+                                self.speak(pc.message.content)
+                        except Exception as _pe:
+                            print(f"[JARVIS] Plain retry also failed: {_pe}")
+                    else:
+                        raise
+
+            if not use_groq:
+                # Streaming NVIDIA call
+                nvidia_temp = temperature   # already set correctly for NVIDIA (0.3 or 1.0 for Nemotron)
+                try:
+                    stream = api_client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tools=tools_oai,
+                        tool_choice="auto",
+                        max_tokens=600,
+                        temperature=nvidia_temp,
+                        top_p=top_p,
+                        stream=True,
+                        **extra,
+                    )
+                    for chunk in stream:
                         if chunk.choices:
                             _process_chunk(chunk.choices[0].delta)
-                else:
-                    raise
+                except Exception as _se:
+                    _se_s = str(_se).lower()
+                    if "failed_generation" in _se_s or "failed to call a function" in _se_s:
+                        print("[JARVIS] NVIDIA tool generation failed — retrying non-stream")
+                        state["buf"] = ""; state["text"] = ""; state["tc"] = {}
+                        try:
+                            retry_resp = api_client.chat.completions.create(
+                                model=model, messages=messages, tools=tools_oai,
+                                tool_choice="auto", max_tokens=400, temperature=0, stream=False,
+                            )
+                            choice = retry_resp.choices[0] if retry_resp.choices else None
+                            if choice:
+                                msg = choice.message
+                                if msg.content:
+                                    state["text"] = msg.content
+                                    self.speak(msg.content)
+                                if msg.tool_calls:
+                                    for i, tc in enumerate(msg.tool_calls):
+                                        state["tc"][i] = {
+                                            "id":        tc.id or f"call_{i}",
+                                            "name":      tc.function.name or "",
+                                            "arguments": tc.function.arguments or "{}",
+                                        }
+                        except Exception as _re:
+                            print(f"[JARVIS] NVIDIA retry also failed: {_re}")
+                    else:
+                        raise
 
-            buf       = state["buf"]
-            full_text = state["text"]
-            tc_raw    = state["tc"]
-            if buf.strip():
-                self.speak(buf.strip())
+            if state["buf"].strip():
+                self.speak(state["buf"].strip())
 
-            tc_list = [tc_raw[i] for i in sorted(tc_raw) if tc_raw[i]["name"]]
-            return full_text.strip(), tc_list
+            tc_list = [state["tc"][i] for i in sorted(state["tc"]) if state["tc"][i]["name"]]
+            return state["text"].strip(), tc_list
 
         try:
             while True:
@@ -658,30 +814,169 @@ class JarvisLive:
                     continue
 
                 user_text = user_text.strip()
-                ut_lower  = user_text.lower()
-                print(f"[JARVIS] User: {user_text}")
+                ut_lower  = user_text.lower().rstrip(".,!?")
+                print(f"\n[JARVIS] ═══ USER COMMAND: {user_text!r} ═══")
                 self.ui.write_log(f"You: {user_text}")
 
-                # ── Deep analysis mode control ─────────────────────────────
+                # ── Deep analysis mode toggle ──────────────────────────────
                 if any(kw in ut_lower for kw in _DEEP_OFF):
                     _deep_persistent = False
                     self.speak("Deep analysis mode disabled, boss. Back to fast mode.")
-                    self.ui.write_log("Jarvis: Deep analysis mode OFF")
                     continue
 
                 if any(kw in ut_lower for kw in _DEEP_ON):
                     _deep_persistent = True
                     self.speak("Deep analysis mode enabled, boss. I will think carefully.")
-                    self.ui.write_log("Jarvis: Deep analysis mode ON")
-                    # Don't continue — also process the message if there's more to it
                     if len(user_text.split()) <= 5:
-                        # Pure mode-switch command, nothing else to process
                         continue
 
                 use_deep = _deep_persistent
-                # ──────────────────────────────────────────────────────────
+
+                # ── LOCAL INTENT OVERRIDE ──────────────────────────────────
+                # Handle crystal-clear commands without sending to LLM.
+                # This prevents the LLM from confusing simple commands.
+                _handled = False
+
+                # Volume
+                if re.search(r"\bvolume up\b", ut_lower):
+                    await self._execute_tool("computer_settings", {"action": "volume_up"})
+                    self.speak("Volume up, boss."); _handled = True
+                elif re.search(r"\bvolume down\b", ut_lower):
+                    await self._execute_tool("computer_settings", {"action": "volume_down"})
+                    self.speak("Volume down, boss."); _handled = True
+                elif m := re.search(r"\bset volume (?:to )?(\d+)\b", ut_lower):
+                    await self._execute_tool("computer_settings", {"action": "volume_set", "value": m.group(1)})
+                    self.speak(f"Volume set to {m.group(1)} percent, boss."); _handled = True
+                elif (re.search(r"\b(mute|unmute)\b", ut_lower) and "volume" in ut_lower) or ut_lower in ("mute", "unmute"):
+                    await self._execute_tool("computer_settings", {"action": "mute"})
+                    self.speak("Done, boss."); _handled = True
+
+                # Brightness
+                elif re.search(r"\bbrightness up\b", ut_lower):
+                    await self._execute_tool("computer_settings", {"action": "brightness_up"})
+                    self.speak("Brightness up, boss."); _handled = True
+                elif re.search(r"\bbrightness down\b", ut_lower):
+                    await self._execute_tool("computer_settings", {"action": "brightness_down"})
+                    self.speak("Brightness down, boss."); _handled = True
+                elif m := re.search(r"\bset brightness (?:to )?(\d+)\b", ut_lower):
+                    await self._execute_tool("computer_settings", {"action": "brightness_set", "value": m.group(1)})
+                    self.speak(f"Brightness set to {m.group(1)}, boss."); _handled = True
+
+                # Screenshot
+                elif re.search(r"\b(take a screenshot|screenshot)\b", ut_lower):
+                    r = await self._execute_tool("computer_settings", {"action": "screenshot"})
+                    self.speak("Screenshot taken, boss."); _handled = True
+
+                # Open app — "open X" or "launch X"
+                elif m := re.search(r"\b(?:open|launch|start)\s+(.+)", ut_lower):
+                    app = m.group(1).strip()
+                    # Only use local override for app names (avoid "open a website", "open a new project" etc.)
+                    if len(app.split()) <= 3 and not any(x in app for x in ["website", "http", "www", "page", "browser"]):
+                        r = await self._execute_tool("open_app", {"app_name": app})
+                        # Speak the actual result — don't say success if it failed
+                        spoken = r.get("result", "") if isinstance(r, dict) else str(r or "")
+                        self.speak(spoken if spoken else f"Opening {app}, boss.")
+                        _handled = True
+
+                # Search web
+                elif m := re.search(r"\b(?:search for|search|look up|google)\s+(.+)", ut_lower):
+                    query = m.group(1).strip()
+                    if len(query) > 2:
+                        r = await self._execute_tool("web_search", {"query": query})
+                        result = r.get("result", "") if isinstance(r, dict) else str(r)
+                        self.speak(result[:300] if result else "No results found, boss.")
+                        _handled = True
+
+                # Weather
+                elif m := re.search(r"\bweather\s+(?:in\s+)?(.+)", ut_lower):
+                    city = m.group(1).strip()
+                    if 1 < len(city.split()) <= 4 or re.match(r"^[a-z ]+$", city):
+                        r = await self._execute_tool("weather_report", {"city": city})
+                        result = r.get("result", "") if isinstance(r, dict) else str(r)
+                        self.speak(result[:300] if result else f"Could not get weather for {city}, boss.")
+                        _handled = True
+
+                # Shutdown / restart / sleep
+                elif ut_lower in ("shutdown", "shut down", "restart", "reboot", "sleep", "hibernate"):
+                    action = "shutdown" if "shut" in ut_lower else ("restart" if "restart" in ut_lower or "reboot" in ut_lower else "sleep")
+                    await self._execute_tool("computer_settings", {"action": action})
+                    _handled = True
+
+                # JARVIS shutdown
+                elif ut_lower in ("goodbye", "bye jarvis", "exit jarvis", "quit jarvis", "shut down jarvis", "goodbye jarvis"):
+                    await self._execute_tool("shutdown_jarvis", {})
+                    _handled = True
+
+                # World Monitor (yes to startup briefing) — use go_to not open
+                elif _world_monitor_asked and ut_lower in ("yes", "yes please", "go ahead", "sure", "open it", "yes go ahead", "open world monitor", "yes open it"):
+                    # Open directly in default browser — bypass Playwright entirely
+                    import subprocess as _sp
+                    import json as _js
+                    _cfg = _js.load(open(API_CONFIG_PATH, encoding="utf-8"))
+                    _browser = _cfg.get("default_browser", "msedge").strip().lower()
+                    _urls = [
+                        "https://www.worldmonitor.app/",
+                        "https://www.worldmonitor.app/dashboard",
+                    ]
+                    # Map config name to executable
+                    _exe_map = {
+                        "msedge":  "msedge",
+                        "edge":    "msedge",
+                        "chrome":  "chrome",
+                        "firefox": "firefox",
+                        "brave":   "brave",
+                    }
+                    _exe = _exe_map.get(_browser, "msedge")
+                    _opened = False
+                    for _url in _urls:
+                        try:
+                            _sp.Popen([_exe, _url],
+                                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                            _opened = True
+                        except FileNotFoundError:
+                            # Executable not in PATH — try full Edge path
+                            _edge_paths = [
+                                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                            ]
+                            for _ep in _edge_paths:
+                                if Path(_ep).exists():
+                                    _sp.Popen([_ep, _url],
+                                        stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                                    _opened = True
+                                    break
+                            if not _opened:
+                                import webbrowser
+                                webbrowser.open(_url)
+                                _opened = True
+                    self.speak("Opening World Monitor now, boss." if _opened else "Could not open World Monitor, boss.")
+                    _world_monitor_asked = False
+                    _handled = True
+
+                if _handled:
+                    _startup_injected = True   # mark startup done once user has interacted
+                    if not _world_monitor_asked:
+                        pass  # already reset above
+                    elif ut_lower not in ("yes", "yes please", "go ahead", "sure", "open it", "yes go ahead", "open world monitor", "yes open it"):
+                        # User said something else — briefing question is no longer relevant
+                        _world_monitor_asked = False
+                    continue
+                # ── END LOCAL INTENT OVERRIDE ──────────────────────────────
 
                 self.ui.set_state("THINKING")
+
+                # Inject startup context once — only into first LLM call
+                # Remove after first turn so it doesn't bias future commands
+                if not _startup_injected:
+                    _startup_injected = True
+
+                # Reset World Monitor flag when any non-yes command goes to LLM
+                if _world_monitor_asked and ut_lower not in (
+                    "yes", "yes please", "go ahead", "sure", "open it",
+                    "yes go ahead", "open world monitor", "yes open it"
+                ):
+                    _world_monitor_asked = False
+
                 conversation.append({"role": "user", "content": user_text})
 
                 # Refresh system prompt cache periodically
@@ -689,11 +984,41 @@ class JarvisLive:
                 if _turn_count % _sys_refresh == 0:
                     _sys_cache = _build_sys()
 
+                def _clean_conversation(conv: list) -> list:
+                    """
+                    Keep the conversation clean for Groq's strict validation.
+                    Only strips tool_calls/tool messages from PREVIOUS turns (not the current one).
+                    The current turn's tool calls + results must stay so the model can summarize them.
+                    """
+                    # Find the last user message index — everything after it is the current turn
+                    last_user_idx = -1
+                    for i, msg in enumerate(conv):
+                        if msg.get("role") == "user":
+                            last_user_idx = i
+
+                    clean = []
+                    for i, msg in enumerate(conv):
+                        if i > last_user_idx:
+                            # Current turn — keep everything including tool_calls and tool results
+                            clean.append(msg)
+                        elif msg.get("role") == "assistant" and msg.get("tool_calls"):
+                            # Previous turn tool calls — strip tool_calls, keep text only
+                            text = msg.get("content", "") or ""
+                            if text.strip():
+                                clean.append({"role": "assistant", "content": text})
+                            # Skip — corresponding tool results dropped below
+                        elif msg.get("role") == "tool":
+                            # Previous turn tool results — drop (they reference stripped tool_calls)
+                            pass
+                        else:
+                            clean.append(msg)
+                    return clean
+
                 try:
                     while True:
-                        messages_snap = [
-                            {"role": "system", "content": _sys_cache}
-                        ] + list(conversation)
+                        # Build clean message snapshot — no stale tool_calls in history
+                        clean_conv    = _clean_conversation(list(conversation))
+                        messages_snap = [{"role": "system", "content": _sys_cache}] + clean_conv
 
                         final_text, tool_calls = await loop.run_in_executor(
                             None,
@@ -704,7 +1029,16 @@ class JarvisLive:
                             if final_text:
                                 full_out_log.append(final_text)
                                 conversation.append({"role": "assistant", "content": final_text})
+                                print(f"[JARVIS] ─── RESPONSE (no tool): {final_text[:80]!r}")
                             break
+
+                        # Log every tool JARVIS decided to call
+                        for tc in tool_calls:
+                            try:
+                                args_preview = json.loads(tc["arguments"] or "{}")
+                            except Exception:
+                                args_preview = tc["arguments"]
+                            print(f"[JARVIS] ─── TOOL SELECTED: {tc['name']} | args: {str(args_preview)[:120]}")
 
                         if final_text:
                             full_out_log.append(final_text)
@@ -750,19 +1084,26 @@ class JarvisLive:
                             daemon=True
                         ).start()
 
-                    if len(conversation) > 24:
-                        conversation = conversation[-24:]
+                    if len(conversation) > 12:
+                        # Keep only the last 6 turns (12 messages)
+                        # but always keep the startup context at the front
+                        conversation = conversation[-12:]
 
                 except Exception as e:
                     err_str = str(e)
                     print(f"[JARVIS] API error: {err_str}")
                     traceback.print_exc()
-                    if "401" in err_str or "authentication" in err_str.lower():
-                        msg = "Invalid NVIDIA API key, boss. Please update config/api_keys.json."
+                    if "tool_use_failed" in err_str or "tool call validation" in err_str.lower() or "failed to call a function" in err_str.lower():
+                        # Bad tool format from model — clear history, don't crash
+                        print("[JARVIS] Clearing conversation history due to tool validation error")
+                        conversation.clear()
+                        msg = "Sorry boss, I had a formatting issue. Please say that again."
+                    elif "401" in err_str or "authentication" in err_str.lower():
+                        msg = "Invalid API key, boss. Please update config/api_keys.json."
                     elif "429" in err_str or "rate" in err_str.lower():
                         msg = "Rate limit hit, boss. Give me a moment."
                     else:
-                        msg = f"I hit an error, boss: {err_str[:100]}"
+                        msg = f"I hit an error, boss: {err_str[:80]}"
                     self.ui.write_log(f"ERR: {msg}")
                     self.speak(msg)
                     full_out_log = []
@@ -799,7 +1140,7 @@ class JarvisLive:
         self.speak(greeting)
         self.ui.write_log(f"Jarvis: {greeting}")
 
-        # Fetch news from multiple RSS feeds — diverse, real-time, no DDG needed
+        # Fetch news from multiple RSS feeds in parallel
         def _fast_news():
             import xml.etree.ElementTree as _ET
             import requests as _req
@@ -808,48 +1149,49 @@ class JarvisLive:
             _HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             _FEEDS = [
                 ("BBC",      "https://feeds.bbci.co.uk/news/world/rss.xml"),
-                ("AJazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
+                ("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"),
                 ("Guardian", "https://www.theguardian.com/world/rss"),
-                ("Euronews", "https://feeds.feedburner.com/euronews/en/news/"),
                 ("NPR",      "https://feeds.npr.org/1001/rss.xml"),
+                ("CNN",      "http://rss.cnn.com/rss/edition_world.rss"),
             ]
 
             def _fetch_one(name_url):
                 name, url = name_url
                 try:
-                    resp  = _req.get(url, timeout=4, headers=_HDR)
+                    resp  = _req.get(url, timeout=5, headers=_HDR)
+                    resp.raise_for_status()
                     root  = _ET.fromstring(resp.content)
                     items = root.findall("./channel/item/title") or root.findall(".//item/title")
                     for item in items:
                         t = (item.text or "").strip()
                         if len(t) > 20:
-                            return t   # return first good headline from this feed
-                except Exception:
-                    pass
+                            print(f"[News] {name}: {t[:60]}")
+                            return t
+                except Exception as e:
+                    print(f"[News] {name} failed: {e}")
                 return None
 
-            # Fetch all feeds in parallel — takes only as long as the slowest successful one
             headlines = []
             with _cf.ThreadPoolExecutor(max_workers=5) as ex:
-                futures = {ex.submit(_fetch_one, f): f[0] for f in _FEEDS}
-                for fut in _cf.as_completed(futures, timeout=6):
-                    result = fut.result()
-                    if result and result not in headlines:
-                        headlines.append(result)
+                futs = [ex.submit(_fetch_one, f) for f in _FEEDS]
+                for fut in _cf.as_completed(futs, timeout=8):
+                    try:
+                        result = fut.result()
+                        if result and result not in headlines:
+                            headlines.append(result)
+                    except Exception:
+                        pass
                     if len(headlines) >= 3:
                         break
 
+            print(f"[News] Got {len(headlines)} headlines")
             return headlines[:3]
 
-        # Start fetch immediately — runs while greeting is being spoken by ElevenLabs
-        news_future = asyncio.ensure_future(
-            loop.run_in_executor(None, _fast_news)
-        )
-
-        # Collect result — should be ready by the time greeting finishes
+        # Fetch news in thread — doesn't block the async loop
         try:
-            headlines = await asyncio.wait_for(news_future, timeout=7.0)
-        except Exception:
+            headlines = await asyncio.get_event_loop().run_in_executor(None, _fast_news)
+        except Exception as e:
+            print(f"[News] Fetch failed: {e}")
             headlines = []
 
         # Format into spoken briefing — instant, no LLM
@@ -873,7 +1215,7 @@ class JarvisLive:
         self.ui.write_log(f"Jarvis: {briefing_text}")
 
         self._startup_context = [
-            {"role": "user",      "content": "[STARTUP] Startup briefing complete."},
+            {"role": "user",      "content": "[SYSTEM NOTE] Startup briefing was delivered automatically at launch. The boss has not asked any question yet."},
             {"role": "assistant", "content": f"{greeting} {briefing_text}"},
         ]
         self.ui.set_state("LISTENING")
@@ -918,223 +1260,398 @@ class JarvisLive:
 
     async def _listen_audio(self):
         """
-        Continuous microphone listener using ElevenLabs Scribe v2 STT.
-        Far better accent/dialect recognition than Google STT.
-        Records a phrase via pyaudio + SpeechRecognition's AudioData,
-        sends raw WAV bytes to ElevenLabs, gets text back.
+        Continuous microphone listener.
+        Records via sounddevice (no pyaudio needed), sends WAV to ElevenLabs Scribe v2.
+        If Scribe quota exhausted → falls back to Google STT via sounddevice.
         """
-        import json as _json
         import io
         import wave
-        # pyrefly: ignore [missing-import]
-        import speech_recognition as sr
-        # pyrefly: ignore [missing-import]
-        from elevenlabs import ElevenLabs as _EL
+        import time as _time
+        import numpy as np
+        import sounddevice as sd
 
         loop = asyncio.get_event_loop()
 
-        # Load ElevenLabs key
+        # Load config
         try:
             with open(API_CONFIG_PATH, "r", encoding="utf-8") as _f:
-                _cfg = _json.load(_f)
-            el_key = _cfg.get("elevenlabs_api_key", "").strip()
+                _cfg = json.load(_f)
+            el_key  = _cfg.get("elevenlabs_api_key", "").strip()
+            mic_idx = _cfg.get("mic_index", None)
         except Exception:
-            el_key = ""
+            el_key  = ""
+            mic_idx = None
 
-        if not el_key:
-            print("[JARVIS] ⚠️ No ElevenLabs key — falling back to Google STT")
-            await self._listen_audio_google()
-            return
-
-        el_client = _EL(api_key=el_key)
-        rec       = sr.Recognizer()
-        rec.energy_threshold         = 300    # start low; calibration will raise it
-        rec.dynamic_energy_threshold = True   # adapt to environment continuously
-        rec.pause_threshold          = 0.8
-        rec.non_speaking_duration    = 0.5
-
-        # Short filler words that are pure mic noise — ignore these
-        # Note: "yes", "no", "ok" are intentionally NOT here — they're valid responses
+        # Noise phrases to filter
         _NOISE_PHRASES = {
             "", "uh", "um", "hmm", "hm", "ah", "mm", "mmm", "mhm",
             "uh huh", "the", "a", "oh", "eh", "hey", "hi",
             "thank you", "thanks", "bye", "goodbye",
         }
-
-        # Patterns that indicate background noise / TV / music — not a user command
-        import re as _re_noise
         _NOISE_PATTERNS = [
-            r"^\s*[\W\d]+\s*$",           # only punctuation/numbers
-            r"^.{1,2}$",                  # 1-2 char transcriptions
+            r"^\s*[\W\d]+\s*$",
+            r"^.{1,2}$",
+            r"^\[.*\]$",          # pure Scribe sound tags like [music] [applause]
         ]
 
-        print("[JARVIS] ElevenLabs Scribe STT started")
-        self.ui.write_log("SYS: Microphone active (ElevenLabs Scribe) — speak to JARVIS.")
+        SAMPLE_RATE    = 44100
+        CHANNELS       = 1
+        CHUNK_FRAMES   = 1024
+        # RMS thresholds (for int16 range 0-32768)
+        SILENCE_RMS    = 400    # below this = silence
+        SPEECH_RMS     = 700    # above this = speech detected
+        MIN_SPEECH_SEC = 0.5    # clips shorter than this are noise
+        MAX_SPEECH_SEC = 15.0
+        SILENCE_END_SEC = 0.8   # stop recording after 800ms of silence
 
-        # Boost mic volume to max in Windows so it picks up voice clearly
+        def _chunk_rms(chunk: np.ndarray) -> float:
+            """RMS of int16 chunk (range 0–32768)."""
+            return float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+
+        def _make_wav(frames: list) -> bytes:
+            """Concatenate int16 numpy chunks into a WAV file."""
+            audio = np.concatenate(frames, axis=0).flatten()
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)       # int16 = 2 bytes
+                wf.setframerate(SAMPLE_RATE)
+                wf.writeframes(audio.tobytes())
+            buf.seek(0)
+            return buf.read()
+
+        # Show available devices
+        try:
+            devs = sd.query_devices()
+            print(f"[JARVIS] Audio devices:")
+            for i, d in enumerate(devs):
+                if d['max_input_channels'] > 0:
+                    print(f"  [{i}] {d['name']}")
+        except Exception:
+            pass
+
+        if mic_idx is not None:
+            try:
+                dev_info = sd.query_devices(mic_idx)
+                print(f"[JARVIS] Using mic [{mic_idx}]: {dev_info['name']}")
+            except Exception:
+                print(f"[JARVIS] mic_index {mic_idx} invalid — using default")
+                mic_idx = None
+
+        # Boost mic volume (non-critical)
         try:
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
             from ctypes import cast, POINTER
             from comtypes import CLSCTX_ALL
             mic_dev = AudioUtilities.GetMicrophone()
             if mic_dev:
-                iface = mic_dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                iface   = mic_dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                 mic_vol = cast(iface, POINTER(IAudioEndpointVolume))
                 mic_vol.SetMasterVolumeLevelScalar(1.0, None)
-                print(f"[JARVIS] Mic volume boosted to 100%")
+                print("[JARVIS] Mic volume boosted to 100%")
         except Exception:
-            pass  # non-critical
+            pass
+
+        use_scribe = bool(el_key)
+        if use_scribe:
+            from elevenlabs import ElevenLabs as _EL
+            el_client = _EL(api_key=el_key)
+            print("[JARVIS] STT: ElevenLabs Scribe v2")
+            self.ui.write_log("SYS: Mic active (Scribe STT) — speak to JARVIS.")
+        else:
+            print("[JARVIS] STT: Google")
+            self.ui.write_log("SYS: Mic active (Google STT) — speak to JARVIS.")
 
         def _transcribe_loop():
-            """
-            Keep microphone stream open continuously.
-            Re-opening every phrase causes device-busy errors and degrades accuracy.
-            """
-            import time as _time
+            nonlocal use_scribe
+
+            sd_kwargs = dict(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                blocksize=CHUNK_FRAMES,
+            )
+            if mic_idx is not None:
+                sd_kwargs["device"] = mic_idx
+
+            print(f"[JARVIS] Opening mic stream (sr={SAMPLE_RATE}, device={mic_idx})")
+
             try:
-                # List available mics at startup for diagnostics
-                mic_names = sr.Microphone.list_microphone_names()
-                print(f"[JARVIS] Available microphones ({len(mic_names)}):")
-                for i, name in enumerate(mic_names):
-                    print(f"  [{i}] {name}")
-
-                # Allow config to override mic index (add "mic_index": N to api_keys.json)
-                try:
-                    import json as _json2
-                    _cfg2 = _json2.load(open(API_CONFIG_PATH, encoding="utf-8"))
-                    _mic_idx = _cfg2.get("mic_index", None)
-                    if _mic_idx is not None:
-                        print(f"[JARVIS] Using mic index {_mic_idx}: {mic_names[_mic_idx] if _mic_idx < len(mic_names) else 'unknown'}")
-                except Exception:
-                    _mic_idx = None
-
-                mic = sr.Microphone(device_index=_mic_idx)
-
-                # Open once, keep open for entire session
-                with mic as source:
-                    rec.adjust_for_ambient_noise(source, duration=1.5)
-                    # Cap threshold: quiet mics need low threshold to detect speech
-                    # ambient + 30 but never above 200
-                    rec.energy_threshold = min(200, max(50, rec.energy_threshold + 30))
-                    print(f"[JARVIS] Mic calibrated — threshold: {rec.energy_threshold:.0f}")
+                with sd.InputStream(**sd_kwargs) as stream:
+                    print("[JARVIS] Mic open — listening...")
 
                     while True:
-                        # Pause while muted or speaking (avoids echo)
+                        # ── MUTED OR JARVIS SPEAKING: drain buffer aggressively ──
                         if self.ui.muted or self._is_speaking:
-                            _time.sleep(0.15)
+                            # Keep draining until JARVIS stops speaking
+                            while self.ui.muted or self._is_speaking:
+                                try:
+                                    stream.read(CHUNK_FRAMES * 8)
+                                except Exception:
+                                    pass
+                                _time.sleep(0.05)
+                            # After speaking stops: wait 700ms + drain 30 chunks
+                            # This prevents TTS audio echo from being mis-transcribed as a command
+                            _time.sleep(0.7)
+                            for _ in range(30):
+                                try:
+                                    stream.read(CHUNK_FRAMES)
+                                except Exception:
+                                    break
                             continue
 
+                        # ── WAIT FOR SPEECH ONSET ──
                         try:
-                            audio_data = rec.listen(source, timeout=5, phrase_time_limit=15)
+                            chunk, _ = stream.read(CHUNK_FRAMES)
+                        except Exception:
+                            _time.sleep(0.05)
+                            continue
 
-                            # Convert to WAV for ElevenLabs Scribe
-                            wav_buf = io.BytesIO()
-                            with wave.open(wav_buf, "wb") as wf:
-                                wf.setnchannels(1)
-                                wf.setsampwidth(audio_data.sample_width)
-                                wf.setframerate(audio_data.sample_rate)
-                                wf.writeframes(audio_data.frame_data)
+                        if _chunk_rms(chunk) < SPEECH_RMS:
+                            continue  # silence — keep waiting
 
-                            wav_buf.seek(0)
-                            wav_buf.name = "speech.wav"
-                            result = el_client.speech_to_text.convert(
-                                file=wav_buf,
-                                model_id="scribe_v2",
-                                language_code="eng",
-                            )
-                            text = (result.text or "").strip()
+                        # ── RECORD UNTIL SILENCE ──
+                        frames  = [chunk]
+                        silence = 0.0
+                        elapsed = CHUNK_FRAMES / SAMPLE_RATE
 
-                            # Reject background noise and short fragments
-                            text_lower = text.lower().rstrip(".,!? ")
-                            word_count = len(text.split())
-                            is_noise = (
-                                not text
-                                or word_count < 3          # require 3+ words
-                                or text_lower in _NOISE_PHRASES
-                                or any(_re_noise.match(p, text_lower) for p in _NOISE_PATTERNS)
-                            )
-                            if not is_noise:
-                                print(f"[JARVIS] Heard: {text}")
-                                self.ui._text_queue.put(text)
-                            elif text:
-                                print(f"[JARVIS] Noise filtered ({word_count}w): {text!r}")
+                        while elapsed < MAX_SPEECH_SEC:
+                            # Stop if JARVIS starts speaking mid-recording
+                            if self._is_speaking:
+                                frames = []
+                                break
 
-                        except sr.WaitTimeoutError:
-                            pass  # silence — normal, keep listening
-                        except sr.UnknownValueError:
-                            pass  # unintelligible audio — keep listening
-                        except Exception as e:
-                            err_s = str(e).lower()
-                            if "quota_exceeded" in err_s or "0 credits" in err_s or "quota exceeded" in err_s:
-                                print("[JARVIS] ElevenLabs Scribe quota exhausted — falling back to Google STT")
-                                self.ui.write_log("SYS: Scribe quota used up — switching to Google STT")
-                                # Exit this loop so Google STT takes over
-                                return
-                            print(f"[JARVIS] Scribe error: {str(e)[:80]}")
-                            _time.sleep(0.5)
+                            try:
+                                chunk, _ = stream.read(CHUNK_FRAMES)
+                            except Exception:
+                                break
+                            frames.append(chunk)
+                            elapsed += CHUNK_FRAMES / SAMPLE_RATE
+
+                            rms = _chunk_rms(chunk)
+                            if rms < SILENCE_RMS:
+                                silence += CHUNK_FRAMES / SAMPLE_RATE
+                                if silence >= SILENCE_END_SEC:
+                                    break
+                            else:
+                                silence = 0.0
+
+                        if not frames or elapsed < MIN_SPEECH_SEC:
+                            if elapsed > 0:
+                                print(f"[JARVIS] Clip too short ({elapsed:.2f}s) — skipped")
+                            continue
+
+                        # ── TRANSCRIBE ──
+                        wav_bytes = _make_wav(frames)
+                        text = ""
+
+                        if use_scribe:
+                            try:
+                                wav_buf      = io.BytesIO(wav_bytes)
+                                wav_buf.name = "speech.wav"
+                                result = el_client.speech_to_text.convert(
+                                    file=wav_buf,
+                                    model_id="scribe_v2",
+                                    language_code="eng",
+                                )
+                                text = (result.text or "").strip()
+                            except Exception as e:
+                                err_s = str(e).lower()
+                                if any(x in err_s for x in ("quota_exceeded", "0 credits", "quota exceeded")):
+                                    print("[JARVIS] Scribe quota exhausted — switching to Google STT")
+                                    self.ui.write_log("SYS: Scribe quota used — Google STT active.")
+                                    use_scribe = False
+                                else:
+                                    print(f"[JARVIS] Scribe error: {str(e)[:80]}")
+                                continue
+
+                        if not use_scribe:
+                            try:
+                                import speech_recognition as _sr
+                                _rec = _sr.Recognizer()
+                                ad   = _sr.AudioData(wav_bytes, SAMPLE_RATE, 2)
+                                text = _rec.recognize_google(ad).strip()
+                            except Exception as e:
+                                if "UnknownValueError" not in type(e).__name__:
+                                    print(f"[JARVIS] Google STT error: {str(e)[:80]}")
+                                continue
+
+                        if not text:
+                            continue
+
+                        # ── NOISE FILTER ──
+                        # Strip Scribe sound-event tags like [outro jingle], [clattering], [music]
+                        # These are NEVER voice commands — always background audio
+                        clean_text = re.sub(r"\[.*?\]", "", text).strip()
+
+                        if not clean_text:
+                            print(f"[JARVIS] Scribe tag only — filtered: {text!r}")
+                            continue
+
+                        text_lower = clean_text.lower().rstrip(".,!? ")
+                        word_count = len(clean_text.split())
+                        is_noise = (
+                            word_count < 2
+                            or text_lower in _NOISE_PHRASES
+                            or any(re.match(p, text_lower) for p in _NOISE_PATTERNS)
+                        )
+                        if is_noise:
+                            print(f"[JARVIS] Noise filtered ({word_count}w): {text!r}")
+                        else:
+                            print(f"[JARVIS] >>> Heard: {clean_text}")
+                            self.ui._text_queue.put(clean_text)
 
             except Exception as e:
-                print(f"[JARVIS] Mic init failed: {e}")
+                print(f"[JARVIS] Mic stream error: {e}")
                 self.ui.write_log(f"SYS: Mic error — {e}")
+                _time.sleep(2)
 
         await loop.run_in_executor(None, _transcribe_loop)
-        # If we get here, Scribe failed/quota exceeded — use Google STT
-        print("[JARVIS] Falling back to Google STT")
-        await self._listen_audio_google()
 
     async def _listen_audio_google(self):
-        """Fallback: Google STT when ElevenLabs key is absent."""
-        # pyrefly: ignore [missing-import]
-        import speech_recognition as sr
+        """
+        Google STT fallback — uses sounddevice (no pyaudio needed).
+        Called only when _listen_audio exits (e.g. Scribe quota).
+        """
+        import io
+        import wave
         import time as _time
+        import numpy as np
+        import sounddevice as sd
 
         loop = asyncio.get_event_loop()
-        rec  = sr.Recognizer()
-        rec.energy_threshold         = 300    # start low; calibration raises it
-        rec.dynamic_energy_threshold = True   # adapt continuously
-        rec.pause_threshold          = 0.8
-        rec.non_speaking_duration    = 0.5
+
+        try:
+            with open(API_CONFIG_PATH, "r", encoding="utf-8") as _f:
+                _cfg_g = json.load(_f)
+            _mic_idx_g = _cfg_g.get("mic_index", None)
+        except Exception:
+            _mic_idx_g = None
 
         _NOISE = {
             "", "uh", "um", "hmm", "hm", "ah", "mm", "mmm", "mhm", "uh huh", "the", "a",
         }
 
-        print("[JARVIS] Google STT fallback started")
+        SAMPLE_RATE     = 44100
+        CHANNELS        = 1
+        CHUNK_FRAMES    = 1024
+        SILENCE_RMS     = 400
+        SPEECH_RMS      = 700
+        MIN_SPEECH_SEC  = 0.5
+        MAX_SPEECH_SEC  = 15.0
+        SILENCE_END_SEC = 0.8
 
-        def _loop():
+        def _chunk_rms(chunk):
+            return float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+
+        def _make_wav(frames):
+            audio = np.concatenate(frames, axis=0).flatten()
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(SAMPLE_RATE)
+                wf.writeframes(audio.tobytes())
+            buf.seek(0)
+            return buf.read()
+
+        print(f"[JARVIS] Google STT fallback (mic_index={_mic_idx_g})")
+        self.ui.write_log("SYS: Google STT active — speak to JARVIS.")
+
+        def _loop_fn():
+            sd_kwargs = dict(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                             dtype="int16", blocksize=CHUNK_FRAMES)
+            if _mic_idx_g is not None:
+                sd_kwargs["device"] = _mic_idx_g
+
             try:
-                # Show available mics
-                mic_names = sr.Microphone.list_microphone_names()
-                print(f"[JARVIS] Google STT — {len(mic_names)} mic(s) found. Using default.")
-                mic = sr.Microphone()
-                with mic as source:
-                    rec.adjust_for_ambient_noise(source, duration=1.5)
-                    rec.energy_threshold = min(200, max(50, rec.energy_threshold + 30))
-                    print(f"[JARVIS] Google STT calibrated — threshold: {rec.energy_threshold:.0f}")
-
+                with sd.InputStream(**sd_kwargs) as stream:
                     while True:
                         if self.ui.muted or self._is_speaking:
-                            _time.sleep(0.2)
+                            while self.ui.muted or self._is_speaking:
+                                try: stream.read(CHUNK_FRAMES * 8)
+                                except Exception: pass
+                                _time.sleep(0.05)
+                            _time.sleep(0.7)
+                            for _ in range(30):
+                                try: stream.read(CHUNK_FRAMES)
+                                except Exception: break
                             continue
+
                         try:
-                            audio = rec.listen(source, timeout=5, phrase_time_limit=15)
-                            text  = rec.recognize_google(audio).strip()
-                            tl    = text.lower().rstrip(".,!? ")
-                            if text and len(text) > 1 and tl not in _NOISE:
+                            chunk, _ = stream.read(CHUNK_FRAMES)
+                        except Exception:
+                            _time.sleep(0.05); continue
+
+                        if _chunk_rms(chunk) < SPEECH_RMS:
+                            continue
+
+                        frames  = [chunk]
+                        silence = 0.0
+                        elapsed = CHUNK_FRAMES / SAMPLE_RATE
+
+                        while elapsed < MAX_SPEECH_SEC:
+                            if self._is_speaking:
+                                frames = []; break
+                            try:
+                                chunk, _ = stream.read(CHUNK_FRAMES)
+                            except Exception: break
+                            frames.append(chunk)
+                            elapsed += CHUNK_FRAMES / SAMPLE_RATE
+                            if _chunk_rms(chunk) < SILENCE_RMS:
+                                silence += CHUNK_FRAMES / SAMPLE_RATE
+                                if silence >= SILENCE_END_SEC: break
+                            else:
+                                silence = 0.0
+
+                        if not frames or elapsed < MIN_SPEECH_SEC:
+                            continue
+
+                        wav_bytes = _make_wav(frames)
+                        try:
+                            import speech_recognition as _sr
+                            _rec = _sr.Recognizer()
+                            ad   = _sr.AudioData(wav_bytes, SAMPLE_RATE, 2)
+                            text = _rec.recognize_google(ad).strip()
+                            tl   = text.lower().rstrip(".,!? ")
+                            wc   = len(text.split())
+                            if text and wc >= 2 and tl not in _NOISE:
+                                print(f"[JARVIS] >>> Heard (Google): {text}")
                                 self.ui._text_queue.put(text)
                             elif text:
                                 print(f"[JARVIS] Noise filtered: {text!r}")
-                        except (sr.WaitTimeoutError, sr.UnknownValueError):
-                            pass
-                        except Exception:
-                            _time.sleep(1)
+                        except Exception as e:
+                            if "UnknownValueError" not in type(e).__name__:
+                                print(f"[JARVIS] Google STT error: {str(e)[:80]}")
             except Exception as e:
-                print(f"[JARVIS] Google STT init failed: {e}")
+                print(f"[JARVIS] Google STT stream error: {e}")
 
-        await loop.run_in_executor(None, _loop)
+        await loop.run_in_executor(None, _loop_fn)
 
 
 def main():
+    # ── Single-instance guard ──────────────────────────────────────────────
+    # If JARVIS is already running, bring its window to front and exit.
+    import tempfile, atexit
+    _lock_file = Path(tempfile.gettempdir()) / "jarvis_instance.lock"
+
+    try:
+        import msvcrt
+        _lf = open(_lock_file, "w")
+        msvcrt.locking(_lf.fileno(), msvcrt.LK_NBLCK, 1)
+        # Lock acquired — we are the only instance
+        @atexit.register
+        def _release():
+            try:
+                _lf.close()
+                _lock_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except (OSError, IOError):
+        # Another instance is already running — just exit silently
+        print("[JARVIS] Already running — exiting duplicate.")
+        import sys
+        sys.exit(0)
+
+    # ── Launch UI ─────────────────────────────────────────────────────────
     ui = JarvisUI("face.png")
 
     def runner():
@@ -1143,7 +1660,7 @@ def main():
         try:
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:
-            print("\n🔴 Shutting down...")
+            print("\n[JARVIS] Shutting down...")
 
     threading.Thread(target=runner, daemon=True).start()
     ui.root.mainloop()

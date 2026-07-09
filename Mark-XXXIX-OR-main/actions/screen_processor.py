@@ -51,14 +51,13 @@ def _get_api_key() -> str:
     try:
         with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
+        # NVIDIA key is required for vision — Claude key won't work on NVIDIA endpoint
         key = cfg.get("nvidia_api_key", "").strip()
         if not key:
-            key = cfg.get("claude_api_key", "").strip()
-        if not key:
-            raise ValueError("No AI API key found")
+            raise ValueError("No nvidia_api_key found in config/api_keys.json")
         return key
     except Exception as e:
-        raise RuntimeError(f"Could not load API key: {e}")
+        raise RuntimeError(f"Could not load NVIDIA API key: {e}")
 
 
 def _get_camera_index() -> int:

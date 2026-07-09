@@ -212,8 +212,8 @@ class _BrowserThread:
 
     async def _launch_browser_if_needed(self):
         """
-        Tarayıcıyı başlatır. Zaten açıksa hiçbir şey yapmaz.
-        Her zaman default tarayıcıyı kullanır, özel sekme açmaz.
+        Launch the default browser. Tries Playwright first, then falls back
+        to a direct subprocess call (more reliable for system-installed browsers).
         """
         if self._browser and self._browser.is_connected():
             return
@@ -222,12 +222,9 @@ class _BrowserThread:
         self._engine_name, self._exe_path, self._channel, self._is_opera = _find_browser_executable(prog_id)
         engine = getattr(self._playwright, self._engine_name)
 
-        # Temel chromium argümanları
         chromium_args = ["--start-maximized"]
 
         if self._is_opera:
-            # Opera GX bazı sürümlerde varsayılan olarak private modda başlar.
-            # Aşağıdaki flag'ler bunu engeller.
             chromium_args += [
                 "--disable-features=OperaPrivacyMode",
                 "--no-private",
@@ -250,10 +247,36 @@ class _BrowserThread:
                 f"{' / ' + self._exe_path if self._exe_path else ''})"
             )
         except Exception as e:
-            print(f"[Browser] ⚠️ Launch failed ({e}), falling back to built-in Chromium")
+            print(f"[Browser] ⚠️ Playwright launch failed: {e}")
+            # Try to find the actual Edge executable and use it directly
+            edge_paths = [
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            ]
+            edge_exe = None
+            for p in edge_paths:
+                if Path(p).exists():
+                    edge_exe = p
+                    break
+            if not edge_exe:
+                edge_exe = shutil.which("msedge") or shutil.which("microsoft-edge")
+
+            if edge_exe:
+                print(f"[Browser] 🔁 Using Edge directly: {edge_exe}")
+                try:
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=False,
+                        executable_path=edge_exe,
+                        args=["--start-maximized"],
+                    )
+                    return
+                except Exception as e2:
+                    print(f"[Browser] ⚠️ Direct Edge launch failed: {e2}")
+
+            print("[Browser] 🔁 Falling back to built-in Chromium")
             self._browser = await self._playwright.chromium.launch(
                 headless=False,
-                args=["--start-maximized"]
+                args=["--start-maximized"],
             )
 
     async def _get_page(self):
@@ -480,8 +503,12 @@ def browser_control(
     result = "Unknown action."
 
     try:
-        if action == "go_to":
-            result = _bt.run(_bt._go_to(parameters.get("url", "")))
+        if action in ("go_to", "open", "navigate"):
+            url = parameters.get("url", "")
+            if not url:
+                result = "No URL provided."
+            else:
+                result = _bt.run(_bt._go_to(url))
 
         elif action == "search":
             result = _bt.run(_bt._search(
@@ -535,7 +562,49 @@ def browser_control(
     except concurrent.futures.TimeoutError:
         result = "Browser action timed out."
     except Exception as e:
-        result = f"Browser error: {e}"
+        err_str = str(e)
+        print(f"[Browser] Playwright error: {err_str[:120]}")
+        # Playwright failed — fall back to opening directly with subprocess
+        # This works for go_to/open/navigate actions
+        if action in ("go_to", "open", "navigate", "search"):
+            url = parameters.get("url", "")
+            if not url and action == "search":
+                q   = parameters.get("query", "")
+                url = f"https://www.google.com/search?q={q.replace(' ', '+')}"
+            if url:
+                if not url.startswith("http"):
+                    url = "https://" + url
+                try:
+                    import webbrowser
+                    # Try msedge first (user's default)
+                    edge_paths = [
+                        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                    ]
+                    launched = False
+                    for ep in edge_paths:
+                        if Path(ep).exists():
+                            subprocess.Popen([ep, url],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            result  = f"Opened {url} in Microsoft Edge."
+                            launched = True
+                            break
+                    if not launched:
+                        msedge = shutil.which("msedge") or shutil.which("microsoft-edge")
+                        if msedge:
+                            subprocess.Popen([msedge, url],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            result  = f"Opened {url} in Edge."
+                            launched = True
+                    if not launched:
+                        webbrowser.open(url)
+                        result = f"Opened {url} in default browser."
+                except Exception as e2:
+                    result = f"Could not open browser: {e2}"
+            else:
+                result = f"Browser error: {err_str[:80]}"
+        else:
+            result = f"Browser error: {err_str[:80]}"
 
     print(f"[Browser] {result[:80]}")
     if player:

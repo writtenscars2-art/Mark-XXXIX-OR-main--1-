@@ -83,41 +83,52 @@ def _send_whatsapp(receiver: str, message: str) -> str:
 
 def _send_instagram(receiver: str, message: str) -> str:
     """
-    Sends an Instagram DM via browser (instagram.com).
-    Steps: Open Chrome → Go to instagram.com/direct → Search contact → Send
+    Sends an Instagram DM via browser (instagram.com/direct/new/).
+    Steps: Open browser → navigate to Instagram DM → search contact → select → send.
     """
     try:
-        import json, sys
-        from pathlib import Path
-        _cfg_path = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
+        import json as _json
+        from pathlib import Path as _P
+        _cfg_path = _P(__file__).resolve().parent.parent / "config" / "api_keys.json"
         try:
-            _browser = json.loads(_cfg_path.read_text(encoding="utf-8")).get("default_browser", "").strip()
+            _browser = _json.loads(_cfg_path.read_text(encoding="utf-8")).get("default_browser", "").strip()
         except Exception:
             _browser = ""
 
+        # Open the Instagram new DM page
+        url = "https://www.instagram.com/direct/new/"
         if _browser in ("msedge", "edge"):
             import subprocess
-            subprocess.Popen(["msedge", "https://www.instagram.com/direct/new/"],
-                             shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["msedge", url],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             import webbrowser
-            webbrowser.open("https://www.instagram.com/direct/new/")
-        time.sleep(3.5)
+            webbrowser.open(url)
+        time.sleep(4.0)   # wait for page load
 
+        # Click the search input (it's not auto-focused on load)
+        # The search box is the first focusable element on the DM new page
+        pyautogui.hotkey("tab")      # move focus to search input
+        time.sleep(0.3)
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(0.1)
         pyautogui.write(receiver, interval=0.05)
         time.sleep(1.5)
 
+        # Select the first result
         pyautogui.press("down")
         time.sleep(0.3)
         pyautogui.press("enter")
         time.sleep(0.5)
 
-        for _ in range(3):
+        # Click "Next" / "Chat" button
+        for _ in range(4):
             pyautogui.press("tab")
             time.sleep(0.1)
         pyautogui.press("enter")
-        time.sleep(1.5)
+        time.sleep(2.0)
 
+        # Type and send message
         pyautogui.write(message, interval=0.04)
         time.sleep(0.2)
         pyautogui.press("enter")

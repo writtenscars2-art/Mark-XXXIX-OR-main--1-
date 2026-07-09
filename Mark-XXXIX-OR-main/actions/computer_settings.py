@@ -206,7 +206,9 @@ def get_device_info() -> str:
         disk   = psutil.disk_usage("C:\\") if _OS == "Windows" else psutil.disk_usage("/")
         from datetime import datetime
         uptime = datetime.now() - datetime.fromtimestamp(psutil.boot_time())
-        uptime_str = str(uptime).split(".")[0]
+        hours, rem = divmod(int(uptime.total_seconds()), 3600)
+        minutes    = rem // 60
+        uptime_str = f"{hours}h {minutes}m" if hours else f"{minutes}m"
 
         try:
             ip = socket.gethostbyname(socket.gethostname())
@@ -214,16 +216,21 @@ def get_device_info() -> str:
             ip = "unknown"
 
         import platform as _pl
-        proc = _pl.processor()[:40] or _pl.machine()
+        proc = _pl.processor() or _pl.machine() or "unknown"
+        # Shorten long processor strings
+        if len(proc) > 50:
+            proc = proc[:50]
 
-        lines = [
-            f"OS: {_pl.system()} {_pl.release()}",
-            f"Processor: {proc}",
-            f"CPU: {cpu:.0f}%  RAM: {mem.used/1e9:.1f}/{mem.total/1e9:.1f} GB ({mem.percent:.0f}%)",
-            f"Disk: {disk.used/1e9:.0f}/{disk.total/1e9:.0f} GB ({disk.percent:.0f}%)",
-            f"Uptime: {uptime_str}  IP: {ip}",
-        ]
-        return "\n".join(lines)
+        summary = (
+            f"OS: {_pl.system()} {_pl.release()}. "
+            f"CPU: {cpu:.0f}% usage. "
+            f"RAM: {mem.used/1e9:.1f} GB used of {mem.total/1e9:.1f} GB ({mem.percent:.0f}%). "
+            f"Disk C: {disk.used/1e9:.0f} GB used of {disk.total/1e9:.0f} GB ({disk.percent:.0f}%). "
+            f"Uptime: {uptime_str}. "
+            f"IP: {ip}."
+        )
+        print(f"[Settings] Device info: {summary}")
+        return summary
     except Exception as e:
         return f"Could not retrieve device info: {e}"
 
@@ -513,32 +520,75 @@ def dark_mode():
         except Exception as e:
             print(f"[Settings] dark_mode Linux failed: {e}")
 
+def wifi_on():
+    """Enable WiFi on Windows."""
+    if _OS == "Windows":
+        try:
+            subprocess.run(
+                ["netsh", "interface", "set", "interface", "Wi-Fi", "enable"],
+                capture_output=True, timeout=8
+            )
+            return "WiFi enabled."
+        except Exception as e:
+            print(f"[Settings] wifi_on failed: {e}")
+            return f"Could not enable WiFi: {e}"
+    toggle_wifi()
+    return "WiFi toggled."
+
+
+def wifi_off():
+    """Disable WiFi on Windows."""
+    if _OS == "Windows":
+        try:
+            subprocess.run(
+                ["netsh", "interface", "set", "interface", "Wi-Fi", "disable"],
+                capture_output=True, timeout=8
+            )
+            return "WiFi disabled."
+        except Exception as e:
+            print(f"[Settings] wifi_off failed: {e}")
+            return f"Could not disable WiFi: {e}"
+    toggle_wifi()
+    return "WiFi toggled."
+
+
 def toggle_wifi():
     if _OS == "Darwin":
         iface = _get_macos_wifi_interface()
         result = subprocess.run(
             ["networksetup", "-getairportpower", iface],
-            capture_output=True, text=True
+            capture_output=True, text=True, timeout=5
         )
         state = "off" if "On" in result.stdout else "on"
         subprocess.run(["networksetup", "-setairportpower", iface, state],
-            capture_output=True)
+            capture_output=True, timeout=5)
     elif _OS == "Windows":
         try:
-            subprocess.run(
-                ["powershell", "-Command",
-                 "$adapter = Get-NetAdapter | Where-Object {$_.PhysicalMediaType -eq 'Native 802.11'};"
-                 "if ($adapter.Status -eq 'Up') { Disable-NetAdapter -Name $adapter.Name -Confirm:$false }"
-                 "else { Enable-NetAdapter -Name $adapter.Name -Confirm:$false }"],
-                capture_output=True, timeout=10
+            # Use netsh — much faster than PowerShell Get-NetAdapter
+            # Check current state then toggle
+            result = subprocess.run(
+                ["netsh", "interface", "show", "interface", "Wi-Fi"],
+                capture_output=True, text=True, timeout=5
             )
+            if "Enabled" in result.stdout or "Connected" in result.stdout:
+                subprocess.run(
+                    ["netsh", "interface", "set", "interface", "Wi-Fi", "disable"],
+                    capture_output=True, timeout=8
+                )
+            else:
+                subprocess.run(
+                    ["netsh", "interface", "set", "interface", "Wi-Fi", "enable"],
+                    capture_output=True, timeout=8
+                )
         except Exception as e:
-            print(f"[Settings] toggle_wifi Windows failed: {e}")
+            print(f"[Settings] toggle_wifi failed: {e}")
     else:
         try:
-            result = subprocess.run(["nmcli", "radio", "wifi"], capture_output=True, text=True)
+            result = subprocess.run(["nmcli", "radio", "wifi"],
+                capture_output=True, text=True, timeout=5)
             state  = "off" if "enabled" in result.stdout else "on"
-            subprocess.run(["nmcli", "radio", "wifi", state], capture_output=True)
+            subprocess.run(["nmcli", "radio", "wifi", state],
+                capture_output=True, timeout=5)
         except Exception as e:
             print(f"[Settings] toggle_wifi Linux failed: {e}")
 
@@ -621,6 +671,10 @@ ACTION_MAP: dict[str, callable] = {
     "open_run":            open_run,
     "dark_mode":           dark_mode,
     "toggle_wifi":         toggle_wifi,
+    "wifi_on":             wifi_on,
+    "wifi_off":            wifi_off,
+    "wifi_enable":         wifi_on,
+    "wifi_disable":        wifi_off,
     "restart":             restart_computer,
     "shutdown":            shutdown_computer,
 }
@@ -744,7 +798,10 @@ def computer_settings(
         return f"Unknown action: '{raw_action}'."
 
     try:
-        func()
+        result = func()
+        # Return the function's result if it returned a string, otherwise generic done
+        if isinstance(result, str) and result:
+            return result
         return f"Done: {action}."
     except Exception as e:
         print(f"[Settings] Action failed ({action}): {e}")

@@ -23,23 +23,28 @@ _HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
 
 _NEWS_FEEDS = [
     ("BBC World",    "https://feeds.bbci.co.uk/news/world/rss.xml"),
-    ("Al Jazeera",   "https://www.aljazeera.com/xml/rss/all.xml"),
+    ("Guardian",     "https://www.theguardian.com/world/rss"),
     ("NPR",          "https://feeds.npr.org/1001/rss.xml"),
+    ("CNN",          "http://rss.cnn.com/rss/edition_world.rss"),
+    ("Al Jazeera",   "https://www.aljazeera.com/xml/rss/all.xml"),
 ]
 
 
 def _rss_news(max_items: int = 5) -> list[dict]:
-    """Fetch top headlines from RSS feeds. Fast and reliable."""
+    """Fetch top headlines from RSS feeds in parallel. Fast and reliable."""
     import requests
     import xml.etree.ElementTree as ET
+    import concurrent.futures
 
-    for source, url in _NEWS_FEEDS:
+    def _fetch(source_url):
+        source, url = source_url
         try:
             resp  = requests.get(url, timeout=5, headers=_HDR)
+            resp.raise_for_status()
             root  = ET.fromstring(resp.content)
             items = root.findall("./channel/item") or root.findall(".//item")
             results = []
-            for item in items:
+            for item in items[:max_items]:
                 title_el = item.find("title")
                 desc_el  = item.find("description")
                 link_el  = item.find("link")
@@ -48,13 +53,21 @@ def _rss_news(max_items: int = 5) -> list[dict]:
                 link     = (link_el.text  or "").strip() if link_el  is not None else ""
                 if title and len(title) > 10:
                     results.append({"title": title, "snippet": desc[:200], "url": link, "source": source})
-                if len(results) >= max_items:
-                    break
-            if results:
-                return results
+            return results
         except Exception as e:
             print(f"[WebSearch] RSS {source} failed: {e}")
-    return []
+            return []
+
+    all_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+        futs = [ex.submit(_fetch, f) for f in _NEWS_FEEDS]
+        for fut in concurrent.futures.as_completed(futs, timeout=8):
+            try:
+                all_results.extend(fut.result())
+            except Exception:
+                pass
+
+    return all_results[:max_items] if all_results else []
 
 
 def _format_rss(results: list[dict], query: str) -> str:
@@ -76,9 +89,9 @@ def _format_rss(results: list[dict], query: str) -> str:
 def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
     """DDG text search with a hard timeout to prevent hanging."""
     import concurrent.futures
-    import time
 
     def _do_search():
+        # Try new package name first, fall back to old
         try:
             from ddgs import DDGS
         except ImportError:
@@ -93,7 +106,6 @@ def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
                 })
         return results
 
-    # Run with a hard 8-second thread timeout
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
         future = ex.submit(_do_search)
         try:

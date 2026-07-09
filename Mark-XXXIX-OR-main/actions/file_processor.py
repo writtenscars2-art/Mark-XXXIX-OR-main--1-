@@ -18,6 +18,7 @@ Supported types:
 
 import os
 import re
+import sys
 import json
 import shutil
 import subprocess
@@ -525,6 +526,45 @@ def _process_code(path: Path, action: str, params: dict, speak=None) -> str:
     except Exception as e:
         return f"AI processing failed: {e}"
 
+def _process_xml(path: Path, action: str, params: dict, speak=None) -> str:
+    """Process XML files — parse, validate, summarize, or extract."""
+    action = action or "analyze"
+    try:
+        import xml.etree.ElementTree as ET
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        ET.fromstring(content)   # validate it's well-formed XML
+        is_valid = True
+    except Exception:
+        is_valid = False
+        content  = path.read_text(encoding="utf-8", errors="ignore")
+
+    if action == "validate":
+        return f"{'Valid' if is_valid else 'Invalid'} XML. Size: {_file_size_str(path)}"
+
+    if action == "extract_text":
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(content)
+            texts = [elem.text.strip() for elem in root.iter() if elem.text and elem.text.strip()]
+            out = _output_path(path, "extracted", ".txt")
+            out.write_text("\n".join(texts), encoding="utf-8")
+            return f"Text extracted from XML. Saved: {out.name}"
+        except Exception as e:
+            return f"XML extract failed: {e}"
+
+    # For summarize/analyze — use AI on the content
+    preview = content[:8000]
+    prompt  = f"Task: {action} this XML data:\n{preview}"
+    if params.get("instruction"):
+        prompt = f"{params['instruction']}\n\nXML:\n{preview}"
+    try:
+        model    = _claude_client()
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        return f"AI processing failed: {e}"
+
+
 def _process_audio(path: Path, action: str, params: dict, speak=None) -> str:
     action = action or "transcribe"
 
@@ -544,26 +584,45 @@ def _process_audio(path: Path, action: str, params: dict, speak=None) -> str:
             return f"Info failed: {e}"
 
     if action == "transcribe":
+        # Use ElevenLabs Scribe for audio transcription (correct endpoint, not image vision)
         try:
-            model   = _claude_client()
-            content = path.read_bytes()
-            mime    = {
-                "mp3": "audio/mp3", "wav": "audio/wav",
-                "ogg": "audio/ogg", "m4a": "audio/mp4",
-                "aac": "audio/aac", "flac": "audio/flac",
-            }.get(path.suffix.lstrip(".").lower(), "audio/mpeg")
-            response = model.generate_content([
-                "Transcribe all speech in this audio file accurately.",
-                {"mime_type": mime, "data": content}
-            ])
-            result = response.text.strip()
+            from pathlib import Path as _P
+            import json as _json
+            _cfg = _json.load(open(_P(__file__).resolve().parent.parent / "config" / "api_keys.json", encoding="utf-8"))
+            el_key = _cfg.get("elevenlabs_api_key", "").strip()
+            if el_key:
+                from elevenlabs import ElevenLabs as _EL
+                el_client = _EL(api_key=el_key)
+                with open(path, "rb") as _af:
+                    _af.name = path.name   # type: ignore — ElevenLabs uses .name for mime detection
+                    result_obj = el_client.speech_to_text.convert(
+                        file=_af,
+                        model_id="scribe_v2",
+                        language_code="eng",
+                    )
+                result = (result_obj.text or "").strip()
+                if params.get("save", True) and result:
+                    out = _output_path(path, "transcript", ".txt")
+                    out.write_text(result, encoding="utf-8")
+                    return f"Transcription saved: {out.name}\n\nPreview: {result[:300]}"
+                return result or "No speech detected in audio."
+        except Exception as e:
+            print(f"[FileProcessor] ElevenLabs transcription failed: {e}")
+
+        # Fallback: Google STT via SpeechRecognition
+        try:
+            import speech_recognition as _sr
+            _rec = _sr.Recognizer()
+            with _sr.AudioFile(str(path)) as source:
+                audio_data = _rec.record(source)
+            result = _rec.recognize_google(audio_data)
             if params.get("save", True):
                 out = _output_path(path, "transcript", ".txt")
                 out.write_text(result, encoding="utf-8")
                 return f"Transcription saved: {out.name}\n\nPreview: {result[:300]}"
             return result
         except Exception as e:
-            return f"Transcription failed: {e}"
+            return f"Audio transcription failed: {e}"
 
     if action == "convert":
         fmt = params.get("format", "mp3").lstrip(".")
@@ -842,7 +901,7 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
         "csv":     lambda p, a, pm, s: _process_data(p, "csv",   a, pm, s),
         "excel":   lambda p, a, pm, s: _process_data(p, "excel", a, pm, s),
         "json":    _process_json,
-        "xml":     lambda p, a, pm, s: _process_json(p, a, pm, s),  
+        "xml":     lambda p, a, pm, s: _process_xml(p, a, pm, s),
         "code":    _process_code,
         "audio":   _process_audio,
         "video":   _process_video,
