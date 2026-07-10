@@ -1325,11 +1325,12 @@ class JarvisLive:
         CHANNELS       = 1
         CHUNK_FRAMES   = 1024
         # RMS thresholds (for int16 range 0-32768)
-        SILENCE_RMS    = 400    # below this = silence
-        SPEECH_RMS     = 700    # above this = speech detected
-        MIN_SPEECH_SEC = 0.5    # clips shorter than this are noise
-        MAX_SPEECH_SEC = 15.0
-        SILENCE_END_SEC = 0.8   # stop recording after 800ms of silence
+        # Lowered SPEECH_RMS so quieter/accented speech is detected from the start
+        SILENCE_RMS    = 300    # below this = silence (was 400)
+        SPEECH_RMS     = 500    # above this = speech detected (was 700 — too high for some accents)
+        MIN_SPEECH_SEC = 0.3    # ignore clips shorter than this (was 0.5 — too long, cut "yes"/"ok")
+        MAX_SPEECH_SEC = 20.0   # max recording length (was 15s)
+        SILENCE_END_SEC = 1.2   # stop after 1.2s of silence (was 0.8 — too short for paused speech)
 
         def _chunk_rms(chunk: np.ndarray) -> float:
             """RMS of int16 chunk (range 0–32768)."""
@@ -1479,7 +1480,11 @@ class JarvisLive:
                                 result = el_client.speech_to_text.convert(
                                     file=wav_buf,
                                     model_id="scribe_v2",
-                                    language_code="eng",
+                                    # No language_code — let Scribe auto-detect accent/dialect
+                                    # This gives far better accuracy for non-standard accents
+                                    # than forcing "eng" which biases toward American English
+                                    tag_audio_events=False,   # no [music] [laughter] tags
+                                    diarize=False,            # single speaker, no diarization overhead
                                 )
                                 text = (result.text or "").strip()
                             except Exception as e:
@@ -1497,7 +1502,13 @@ class JarvisLive:
                                 import speech_recognition as _sr
                                 _rec = _sr.Recognizer()
                                 ad   = _sr.AudioData(wav_bytes, SAMPLE_RATE, 2)
-                                text = _rec.recognize_google(ad).strip()
+                                # Use show_all=False with language hints for better accent coverage
+                                # Prefer en-NG (Nigerian), en-GB (British), en-US as fallbacks
+                                text = _rec.recognize_google(
+                                    ad,
+                                    language="en-NG",   # Nigerian English — best for your accent
+                                    show_all=False,
+                                ).strip()
                             except Exception as e:
                                 if "UnknownValueError" not in type(e).__name__:
                                     print(f"[JARVIS] Google STT error: {str(e)[:80]}")
@@ -1562,10 +1573,10 @@ class JarvisLive:
         SAMPLE_RATE     = 44100
         CHANNELS        = 1
         CHUNK_FRAMES    = 1024
-        SILENCE_RMS     = 400
-        SPEECH_RMS      = 700
-        MIN_SPEECH_SEC  = 0.5
-        MAX_SPEECH_SEC  = 15.0
+        SILENCE_RMS     = 300    # match Scribe VAD thresholds
+        SPEECH_RMS      = 500    # lower = picks up quieter/accented speech
+        MIN_SPEECH_SEC  = 0.3
+        MAX_SPEECH_SEC  = 20.0
         SILENCE_END_SEC = 0.8
 
         def _chunk_rms(chunk):
@@ -1637,10 +1648,11 @@ class JarvisLive:
                             import speech_recognition as _sr
                             _rec = _sr.Recognizer()
                             ad   = _sr.AudioData(wav_bytes, SAMPLE_RATE, 2)
-                            text = _rec.recognize_google(ad).strip()
+                            # Nigerian English language hint — better accent recognition
+                            text = _rec.recognize_google(ad, language="en-NG").strip()
                             tl   = text.lower().rstrip(".,!? ")
                             wc   = len(text.split())
-                            if text and wc >= 2 and tl not in _NOISE:
+                            if text and wc >= 1 and tl not in _NOISE:
                                 print(f"[JARVIS] >>> Heard (Google): {text}")
                                 self.ui._text_queue.put(text)
                             elif text:
