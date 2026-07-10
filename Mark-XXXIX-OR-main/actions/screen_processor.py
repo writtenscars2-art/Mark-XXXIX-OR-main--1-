@@ -32,9 +32,9 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 NVIDIA_BASE_URL    = "https://integrate.api.nvidia.com/v1"
 NVIDIA_VISION_MODEL = "meta/llama-3.2-11b-vision-instruct"
 
-IMG_MAX_W = 640
-IMG_MAX_H = 360
-JPEG_Q    = 55
+IMG_MAX_W = 1280   # higher res for better finger detection
+IMG_MAX_H = 720
+JPEG_Q    = 75     # better quality — was 55 which could produce artifacts
 
 SYSTEM_PROMPT = (
     "You are JARVIS from Iron Man movies. "
@@ -248,42 +248,75 @@ def screen_process(
     response:       str | None = None,
     player=None,
     session_memory=None,
-) -> bool:
+) -> str:
     user_text = (parameters or {}).get("text") or (parameters or {}).get("user_text", "")
     user_text = (user_text or "").strip()
     if not user_text:
         print("[ScreenProcess] ⚠️ No user_text provided.")
-        return False
+        return "Please tell me what you want me to analyze, boss."
 
     angle = (parameters or {}).get("angle", "screen").lower().strip()
     print(f"[ScreenProcess] angle={angle!r}  text={user_text!r}")
 
-    _ensure_started(player=player)
-
+    # Capture image
     try:
         if angle == "camera":
             image_bytes = _capture_camera()
             mime_type   = "image/jpeg"
-            print("[ScreenProcess] 📷 Camera captured")
+            print(f"[ScreenProcess] 📷 Camera captured — {len(image_bytes)} bytes")
         else:
             image_bytes = _capture_screenshot()
             mime_type   = "image/jpeg" if _PIL_OK else "image/png"
-            print("[ScreenProcess] 🖥️ Screen captured")
+            print(f"[ScreenProcess] 🖥️ Screen captured — {len(image_bytes)} bytes")
     except Exception as e:
         import traceback; traceback.print_exc()
-        print(f"[ScreenProcess] ❌ Capture error: {e}")
-        return False
+        msg = f"Could not capture {'camera' if angle == 'camera' else 'screen'}, boss: {e}"
+        print(f"[ScreenProcess] ❌ {msg}")
+        if player:
+            player.write_log(f"Vision error: {e}")
+        return msg
 
-    print(f"[ScreenProcess] {len(image_bytes)} bytes → sending")
-    result = _live.analyze(image_bytes, mime_type, user_text)
-    return result
+    # Call NVIDIA vision API directly (no background thread needed)
+    try:
+        api_key = _get_api_key()
+        client  = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key)
+        b64     = base64.b64encode(image_bytes).decode("utf-8")
+
+        response_obj = client.chat.completions.create(
+            model=NVIDIA_VISION_MODEL,
+            max_tokens=300,
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text",      "text": user_text},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:{mime_type};base64,{b64}"
+                        }},
+                    ],
+                },
+            ],
+        )
+
+        result = (response_obj.choices[0].message.content or "").strip()
+        if result:
+            print(f"[ScreenProcess] ✅ {result}")
+            if player:
+                player.write_log(f"Jarvis: {result}")
+        return result or "I could not analyze the image, boss."
+
+    except Exception as e:
+        print(f"[ScreenProcess] Analysis error: {e}")
+        if player:
+            player.write_log(f"Vision error: {e}")
+        return f"Vision analysis failed, boss: {e}"
 
 
 def warmup_session(player=None):
-    try:
-        _ensure_started(player=player)
-    except Exception as e:
-        print(f"[ScreenProcess] ⚠️ Warmup error: {e}")
+    """No-op — kept for compatibility."""
+    pass
 
 
 if __name__ == "__main__":
