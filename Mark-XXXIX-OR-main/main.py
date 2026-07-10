@@ -1133,6 +1133,19 @@ class JarvisLive:
                         })
 
                         self.ui.set_state("THINKING")
+
+                        # Tools that don't need a second LLM summarization call
+                        # Their tool result IS the response — speak it directly and break
+                        _SELF_EXPLAINING_TOOLS = {
+                            "open_app", "computer_settings", "browser_control",
+                            "reminder", "send_message", "desktop_control",
+                            "game_updater", "computer_control",
+                        }
+                        all_self_explaining = all(
+                            tc_obj["function"]["name"] in _SELF_EXPLAINING_TOOLS
+                            for tc_obj in tc_objects
+                        )
+
                         for tc_obj in tc_objects:
                             try:
                                 tool_input = json.loads(tc_obj["function"]["arguments"] or "{}")
@@ -1141,11 +1154,24 @@ class JarvisLive:
                             tool_result = await self._execute_tool(
                                 tc_obj["function"]["name"], tool_input
                             )
+                            tool_result_str = tool_result.get("result", "") if isinstance(tool_result, dict) else str(tool_result or "")
                             conversation.append({
                                 "role":         "tool",
                                 "tool_call_id": tc_obj["id"],
                                 "content":      json.dumps(tool_result),
                             })
+                            # For self-explaining tools, speak result directly
+                            if all_self_explaining and tool_result_str and "Done." not in tool_result_str:
+                                full_out_log.append(tool_result_str)
+
+                        if all_self_explaining:
+                            # Speak tool result directly — no second LLM call needed
+                            spoken = " ".join(full_out_log).strip()
+                            if spoken:
+                                self.speak(spoken)
+                                full_out_log = []
+                                conversation.append({"role": "assistant", "content": spoken})
+                            break   # skip second LLM call
 
                     full_out = " ".join(full_out_log).strip()
                     if full_out:
