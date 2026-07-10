@@ -82,54 +82,26 @@ def _is_running(app_name: str) -> bool:
 
 def _launch_windows(app_name: str) -> bool:
     """
-    Launch on Windows: tries subprocess paths first (fast, reliable),
-    then Windows Store apps via shell protocol,
-    falls back to Start menu search only when all else fails.
+    Launch on Windows with correct priority:
+    1. Windows Store apps (most modern apps: WhatsApp, Spotify, etc.)
+    2. Direct binary in PATH (classic apps: notepad, chrome, code, etc.)
+    3. Common executable paths (edge, office apps)
+    4. URI schemes (ms-settings:, etc.)
+    5. Start menu search (last resort)
     """
     import subprocess as _sp
 
-    # 1. Try direct binary in PATH
-    binary = shutil.which(app_name) or shutil.which(app_name.lower())
-    if binary:
-        try:
-            _sp.Popen([binary], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-            time.sleep(1.2)
-            if _is_running(app_name) or _is_running(binary):
-                return True
-        except Exception:
-            pass
-
-    # 2. Try with shell=True for URI schemes (ms-settings:, etc.)
-    if app_name.startswith("ms-") or ":" in app_name:
-        try:
-            _sp.Popen(app_name, shell=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-            time.sleep(1.0)
-            return True
-        except Exception:
-            pass
-    else:
-        try:
-            proc = _sp.Popen(app_name, shell=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
-            time.sleep(1.5)
-            if proc.poll() is None or _is_running(app_name):
-                return True
-        except Exception:
-            pass
-
-    # 3. Try Windows Store app via explorer shell:AppsFolder
-    # This handles WhatsApp, Spotify (Store), Calculator, etc.
     _STORE_IDS = {
         "whatsapp":    "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!WhatsAppDesktop",
         "spotify":     "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify",
         "calculator":  "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
         "calendar":    "microsoft.windowscommunicationsapps_8wekyb3d8bbwe!microsoft.windowslive.calendar",
         "mail":        "microsoft.windowscommunicationsapps_8wekyb3d8bbwe!microsoft.windowslive.mail",
+        "windows store": "Microsoft.WindowsStore_8wekyb3d8bbwe!App",
         "store":       "Microsoft.WindowsStore_8wekyb3d8bbwe!App",
         "photos":      "Microsoft.Windows.Photos_8wekyb3d8bbwe!App",
         "camera":      "Microsoft.WindowsCamera_8wekyb3d8bbwe!App",
         "maps":        "Microsoft.WindowsMaps_8wekyb3d8bbwe!App",
-        "weather":     "Microsoft.BingWeather_8wekyb3d8bbwe!App",
-        "news":        "Microsoft.BingNews_8wekyb3d8bbwe!AppexNews",
         "xbox":        "Microsoft.XboxApp_8wekyb3d8bbwe!Microsoft.XboxApp",
         "teams":       "MSTeams_8wekyb3d8bbwe!MSTeams",
         "telegram":    "TelegramMessengerLLP.TelegramDesktop_t4vj0pshhgkwm!Telegram",
@@ -137,52 +109,97 @@ def _launch_windows(app_name: str) -> bool:
         "tiktok":      "BytedancePte.Ltd.TikTok_6yccndn6064se!TikTok",
         "netflix":     "4DF9E0F8.Netflix_mcm4njqhnhss8!Netflix",
         "discord":     "Discord.Discord",
+        "minecraft":   "Microsoft.MinecraftUWP_8wekyb3d8bbwe!App",
+        "skype":       "Microsoft.SkypeApp_kzf8qxf38zg5c!App",
+        "onenote":     "Microsoft.Office.OneNote_8wekyb3d8bbwe!microsoft.onenoteim",
     }
-    app_key = app_name.lower().strip()
-    if app_key in _STORE_IDS:
+
+    # Hard-coded exe paths for apps not in PATH
+    _EXE_PATHS = {
+        "msedge": [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ],
+        "chrome": [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ],
+        "microsoftedge": [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ],
+    }
+
+    app_key = app_name.lower().strip().replace(".exe", "").replace(" ", "")
+
+    # ── Step 1: Windows Store apps ─────────────────────────────────────────
+    # Check both the raw key and the app_name.lower() for Store IDs
+    store_key = app_name.lower().strip()
+    aumid = _STORE_IDS.get(store_key) or _STORE_IDS.get(app_key)
+    if aumid:
         try:
-            aumid = _STORE_IDS[app_key]
             _sp.Popen(
                 ["explorer", f"shell:AppsFolder\\{aumid}"],
                 stdout=_sp.DEVNULL, stderr=_sp.DEVNULL
             )
             time.sleep(2.0)
-            print(f"[open_app] Launched Store app: {aumid}")
+            print(f"[open_app] ✅ Launched Store app: {aumid}")
             return True
         except Exception as e:
-            print(f"[open_app] Store launch failed for {app_name}: {e}")
+            print(f"[open_app] Store launch failed: {e}")
 
-    # 4. Try pygetwindow — focus if already running
-    try:
-        import pygetwindow as gw
-        wins = gw.getWindowsWithTitle(app_name)
-        if wins:
-            wins[0].activate()
+    # ── Step 2: Direct binary in PATH ─────────────────────────────────────
+    binary = shutil.which(app_name) or shutil.which(app_name.lower())
+    if binary:
+        try:
+            _sp.Popen([binary], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            time.sleep(1.5)
+            print(f"[open_app] ✅ Launched from PATH: {binary}")
             return True
-    except Exception:
-        pass
+        except Exception as e:
+            print(f"[open_app] PATH launch failed: {e}")
 
-    # 5. Last resort: Start menu keyboard search
+    # ── Step 3: Hard-coded exe paths ──────────────────────────────────────
+    from pathlib import Path as _P
+    for path_key, paths in _EXE_PATHS.items():
+        if path_key in app_key or app_key in path_key:
+            for exe_path in paths:
+                if _P(exe_path).exists():
+                    try:
+                        _sp.Popen([exe_path], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                        time.sleep(1.5)
+                        print(f"[open_app] ✅ Launched from hard-coded path: {exe_path}")
+                        return True
+                    except Exception:
+                        pass
+
+    # ── Step 4: URI schemes (ms-settings:, shell:, etc.) ──────────────────
+    if ":" in app_name and not _P(app_name).exists():
+        try:
+            _sp.Popen(["cmd", "/c", "start", "", app_name],
+                      stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            time.sleep(1.0)
+            print(f"[open_app] ✅ Launched URI: {app_name}")
+            return True
+        except Exception as e:
+            print(f"[open_app] URI launch failed: {e}")
+
+    # ── Step 5: Start menu search (last resort) ───────────────────────────
     try:
-        import pyautogui
+        import pyautogui, pyperclip
         pyautogui.PAUSE = 0.1
         pyautogui.press("win")
         time.sleep(0.8)
-        try:
-            import pyperclip
-            pyperclip.copy(app_name)
-            pyautogui.hotkey("ctrl", "v")
-        except Exception:
-            pyautogui.write(app_name, interval=0.06)
+        pyperclip.copy(app_name)
+        pyautogui.hotkey("ctrl", "v")
         time.sleep(1.0)
         pyautogui.press("enter")
         time.sleep(2.5)
-        if _is_running(app_name):
-            return True
-        return None   # uncertain
+        print(f"[open_app] ⚠️ Launched via Start menu (unverified): {app_name}")
+        return None   # uncertain — can't verify
     except Exception as e:
-        print(f"[open_app] Start menu fallback failed: {e}")
-        return False
+        print(f"[open_app] Start menu failed: {e}")
+
+    return False
 
 def _launch_macos(app_name: str) -> bool:
     try:

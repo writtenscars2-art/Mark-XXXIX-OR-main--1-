@@ -1487,11 +1487,9 @@ class JarvisLive:
                                 result = el_client.speech_to_text.convert(
                                     file=wav_buf,
                                     model_id="scribe_v2",
-                                    # No language_code — let Scribe auto-detect accent/dialect
-                                    # This gives far better accuracy for non-standard accents
-                                    # than forcing "eng" which biases toward American English
+                                    language_code="en",  # Lock to English — prevents misidentification of accented English as another language
                                     tag_audio_events=False,   # no [music] [laughter] tags
-                                    diarize=False,            # single speaker, no diarization overhead
+                                    diarize=False,            # single speaker
                                 )
                                 text = (result.text or "").strip()
                             except Exception as e:
