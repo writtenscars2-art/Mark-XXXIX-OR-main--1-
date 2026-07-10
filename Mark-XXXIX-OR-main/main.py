@@ -691,8 +691,7 @@ class JarvisLive:
                         msg = choice.message
                         if msg.content:
                             state["text"] = msg.content
-                            # Speak full response in ONE call — no per-sentence delay
-                            self.speak(msg.content.strip())
+                            # Don't speak here — caller handles TTS to avoid double-speak
                         if msg.tool_calls:
                             for i, tc in enumerate(msg.tool_calls):
                                 state["tc"][i] = {
@@ -777,11 +776,7 @@ class JarvisLive:
                     else:
                         raise
 
-            # Speak the full accumulated response in one call (minimum latency)
-            full_response = state["text"].strip()
-            if full_response:
-                self.speak(full_response)
-
+            # Return text without speaking — caller handles TTS
             tc_list = [state["tc"][i] for i in sorted(state["tc"]) if state["tc"][i]["name"]]
             return state["text"].strip(), tc_list
 
@@ -849,6 +844,45 @@ class JarvisLive:
                 elif re.search(r"\b(take a screenshot|screenshot)\b", ut_lower):
                     r = await self._execute_tool("computer_settings", {"action": "screenshot"})
                     self.speak("Screenshot taken, boss."); _handled = True
+
+                # Write/type something IN an app — "list capabilities in notepad", "type hello in chrome"
+                elif m := re.search(r"\b(?:write|type|list|put|show|note|add|insert)\s+(.+?)\s+(?:in|into|on|inside)\s+(.+)", ut_lower):
+                    content_part = m.group(1).strip()
+                    app_part     = m.group(2).strip()
+                    # Only handle if app_part looks like an app name (1-3 words, no URL)
+                    if len(app_part.split()) <= 3 and "http" not in app_part:
+                        import asyncio as _asyncio
+                        # Build content based on what was requested
+                        if "capabilities" in content_part or "capabilit" in content_part:
+                            write_content = (
+                                "JARVIS CAPABILITIES\n"
+                                "===================\n"
+                                "• Open any installed app on your device\n"
+                                "• Control apps (close, minimize, maximize, switch)\n"
+                                "• Search the web for current news, prices, events\n"
+                                "• Get real-time weather for any city\n"
+                                "• Play YouTube videos\n"
+                                "• Take screenshots and analyze your screen/webcam\n"
+                                "• Send WhatsApp, Telegram, Instagram messages\n"
+                                "• Set reminders via Windows Task Scheduler\n"
+                                "• Control volume, brightness, WiFi, dark mode\n"
+                                "• Read/write/manage files and folders\n"
+                                "• Write, run, and explain code\n"
+                                "• Find flights on Google Flights\n"
+                                "• Control Steam and Epic Games\n"
+                                "• Deep analysis mode with NVIDIA Nemotron\n"
+                                "• Remember your preferences and facts\n"
+                            )
+                        else:
+                            write_content = content_part
+
+                        # Open the app first
+                        open_r = await self._execute_tool("open_app", {"app_name": app_part})
+                        import time as _t; _t.sleep(1.5)   # wait for app to open
+                        # Then type the content
+                        type_r = await self._execute_tool("computer_control", {"action": "type", "text": write_content})
+                        self.speak(f"Done, boss. I've written that in {app_part}.")
+                        _handled = True
 
                 # Open app — "open X" or "launch X"
                 elif m := re.search(r"\b(?:open|launch|start)\s+(.+)", ut_lower):
@@ -1052,6 +1086,8 @@ class JarvisLive:
                                 full_out_log.append(final_text)
                                 conversation.append({"role": "assistant", "content": final_text})
                                 print(f"[JARVIS] ─── RESPONSE (no tool): {final_text[:80]!r}")
+                                # Speak the response here — single place, no double-speak
+                                self.speak(final_text)
                             break
 
                         # Log every tool JARVIS decided to call
