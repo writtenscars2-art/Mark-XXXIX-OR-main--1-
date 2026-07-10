@@ -328,55 +328,19 @@ class JarvisLive:
             self.ui.set_state("LISTENING")
 
     def speak(self, text: str):
-        """Speak text via TTS.
-        - Short confirmations (< 60 chars) use SAPI to save ElevenLabs quota.
-        - Real conversational responses use ElevenLabs for natural voice.
-        """
+        """Speak text via ElevenLabs TTS (non-blocking). All responses use ElevenLabs voice."""
         if not text:
             return
         self.ui.write_log(f"Jarvis: {text[:120]}")
-
-        # Save ElevenLabs quota: use SAPI for short system confirmations
-        # These are action confirmations, not conversational responses
-        _SHORT_CONFIRMATIONS = {
-            "volume up, boss.", "volume down, boss.",
-            "brightness up, boss.", "brightness down, boss.",
-            "done, boss.", "screenshot taken, boss.",
-            "muted, boss.", "unmuted, boss.",
-            "deep analysis mode disabled, boss. back to fast mode.",
-            "deep analysis mode enabled, boss. i will think carefully.",
-            "opening world monitor now, boss.",
-        }
-        text_lower = text.lower().strip()
-        use_sapi   = (
-            len(text) < 80
-            and (
-                text_lower in _SHORT_CONFIRMATIONS
-                or text_lower.startswith(("done,", "opened ", "closed ", "volume ", "brightness ",
-                                          "wifi ", "screenshot", "copied", "moved", "renamed",
-                                          "deleted", "created ", "saved ", "typed "))
-            )
-        )
-
-        if use_sapi:
-            # Use SAPI directly — free, instant, no quota used
-            try:
-                from tts import _sapi_speak
-                _sapi_speak(text)
-                return
-            except Exception:
-                pass   # fall through to ElevenLabs if SAPI fails
-
         self._tts.speak(text)
 
     def speak_error(self, tool_name: str, error: str):
-        """Speak errors via SAPI only — never waste ElevenLabs quota on errors."""
+        """Speak errors via SAPI only — never waste ElevenLabs quota on error messages."""
         short = str(error)[:80]
         self.ui.write_log(f"ERR: {tool_name} -- {short}")
-        # Use SAPI for errors — save ElevenLabs for real speech
         try:
             from tts import _sapi_speak
-            _sapi_speak(f"{tool_name} error: {short}")
+            _sapi_speak(f"Error in {tool_name}, boss.")
         except Exception:
             self._tts.speak(f"Error in {tool_name}, boss.")
 
@@ -1216,12 +1180,7 @@ class JarvisLive:
                     else:
                         msg = f"I hit an error, boss: {err_str[:80]}"
                     self.ui.write_log(f"ERR: {msg}")
-                    # Use SAPI for error messages — save ElevenLabs for real responses
-                    try:
-                        from tts import _sapi_speak
-                        _sapi_speak(msg)
-                    except Exception:
-                        self.speak(msg)
+                    self.speak(msg)
                     full_out_log = []
 
                 finally:
