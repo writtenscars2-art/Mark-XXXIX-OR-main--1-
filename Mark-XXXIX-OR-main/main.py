@@ -475,19 +475,19 @@ class JarvisLive:
                 self._tts.speak("Goodbye, boss.")
 
                 def _shutdown():
-                    import time as _t
+                    import time as _t, os as _os
                     _t.sleep(2.5)
-                    # Use QApplication.quit() on the Qt main thread — most reliable way
+                    # Schedule quit on Qt main thread via QTimer
                     try:
+                        from PyQt6.QtCore import QTimer
                         from PyQt6.QtWidgets import QApplication
                         app = QApplication.instance()
                         if app:
-                            app.quit()
-                            return
+                            QTimer.singleShot(0, app.quit)
+                            _t.sleep(1.0)
                     except Exception:
                         pass
-                    # Hard fallback
-                    import os as _os
+                    # Hard exit — guaranteed to work regardless of Qt state
                     _os._exit(0)
 
                 threading.Thread(target=_shutdown, daemon=False).start()
@@ -1316,11 +1316,17 @@ class JarvisLive:
             el_key  = ""
             mic_idx = None
 
-        # Noise phrases to filter
+        # Noise phrases to filter — these are NEVER valid commands
         _NOISE_PHRASES = {
             "", "uh", "um", "hmm", "hm", "ah", "mm", "mmm", "mhm",
-            "uh huh", "the", "a", "oh", "eh", "hey", "hi",
-            "thank you", "thanks", "bye", "goodbye",
+            "uh huh", "the", "a", "oh", "eh",
+        }
+        # Single-word responses that ARE valid — never filter these
+        _VALID_SINGLE_WORDS = {
+            "yes", "no", "ok", "okay", "sure", "yeah", "yep", "nope",
+            "stop", "cancel", "open", "close", "play", "pause", "next",
+            "back", "quit", "exit", "shutdown", "mute", "unmute",
+            "screenshot", "thanks", "hello", "hi", "jarvis",
         }
         _NOISE_PATTERNS = [
             r"^\s*[\W\d]+\s*$",
@@ -1533,6 +1539,13 @@ class JarvisLive:
 
                         text_lower = clean_text.lower().rstrip(".,!? ")
                         word_count = len(clean_text.split())
+
+                        # Allow known single-word commands through regardless
+                        if word_count == 1 and text_lower in _VALID_SINGLE_WORDS:
+                            print(f"[JARVIS] >>> Heard (single-word command): {clean_text}")
+                            self.ui._text_queue.put(clean_text)
+                            continue
+
                         is_noise = (
                             word_count < 2
                             or text_lower in _NOISE_PHRASES

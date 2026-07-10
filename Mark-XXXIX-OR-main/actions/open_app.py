@@ -131,16 +131,15 @@ _PATH_COMMANDS: dict[str, str] = {
 
 
 def _launch_store(app_key: str) -> bool:
-    """Launch a Windows Store app via AppUserModelId using PowerShell — no Explorer window."""
+    """Launch a Windows Store app via AppUserModelId."""
     aumid = _STORE_APPS.get(app_key)
     if not aumid:
         return False
     try:
-        # Use PowerShell Start-Process — does NOT open a File Explorer window
-        # explorer.exe shell:AppsFolder causes a brief Explorer flash
+        # Use powershell invoke-item which handles shell: URIs cleanly
         subprocess.Popen(
             ["powershell", "-WindowStyle", "Hidden", "-Command",
-             f'Start-Process "shell:AppsFolder\\{aumid}"'],
+             f'Invoke-Item "shell:AppsFolder\\{aumid}"'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
@@ -150,17 +149,7 @@ def _launch_store(app_key: str) -> bool:
         return True
     except Exception as e:
         print(f"[open_app] Store launch failed: {e}")
-        # Fallback: use explorer.exe anyway
-        try:
-            subprocess.Popen(
-                ["explorer.exe", f"shell:AppsFolder\\{aumid}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            time.sleep(1.5)
-            return True
-        except Exception:
-            return False
+        return False
 
 
 def _launch_path(exe: str) -> bool:
