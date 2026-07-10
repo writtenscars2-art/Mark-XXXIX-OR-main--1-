@@ -477,14 +477,20 @@ class JarvisLive:
                 result = r or "Done."
             elif tool_name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
-                self._tts.speak("Goodbye, boss.")
-
-                def _shutdown():
-                    import time as _t, os as _os
-                    _t.sleep(2.5)   # wait for TTS to finish speaking
-                    _os._exit(0)    # hard exit — guaranteed, no Qt dependency
-
-                threading.Thread(target=_shutdown, daemon=False).start()
+                # Speak goodbye synchronously via SAPI — instant, then exit
+                try:
+                    from tts import _sapi_speak
+                    _sapi_speak("Goodbye, boss.")
+                except Exception:
+                    pass
+                # Also queue ElevenLabs goodbye in background
+                try:
+                    self._tts.speak("Goodbye, boss.")
+                except Exception:
+                    pass
+                import time as _t, os as _os
+                _t.sleep(1.5)   # brief pause for audio to start
+                _os._exit(0)    # hard exit — guaranteed
             else:
                 result = f"Unknown tool: {tool_name}"
 
