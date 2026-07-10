@@ -423,16 +423,35 @@ def type_text(text: str, press_enter_after: bool = False):
         pyautogui.press("enter")
 
 def take_screenshot():
-    if _OS == "Windows":
+    """Silent screenshot — saves directly to Desktop/Screenshots folder."""
+    import datetime
+    try:
+        from PIL import ImageGrab
+        ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = Path.home() / "Desktop" / f"screenshot_{ts}.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img = ImageGrab.grab()
+        img.save(str(out))
+        print(f"[Settings] Screenshot saved: {out}")
+        return str(out)
+    except ImportError:
+        pass
+    # Fallback: use mss
+    try:
+        import mss, mss.tools
+        ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = Path.home() / "Desktop" / f"screenshot_{ts}.png"
+        with mss.mss() as sct:
+            shot = sct.grab(sct.monitors[1])
+            mss.tools.to_png(shot.rgb, shot.size, output=str(out))
+        print(f"[Settings] Screenshot saved: {out}")
+        return str(out)
+    except Exception:
+        pass
+    # Last fallback: Win32 hotkey (opens Snip overlay)
+    if _PYAUTOGUI:
         pyautogui.hotkey("win", "shift", "s")
-    elif _OS == "Darwin":
-        pyautogui.hotkey("command", "shift", "3")
-    else:
-        for cmd in [["scrot"], ["gnome-screenshot"], ["import", "-window", "root", "screenshot.png"]]:
-            if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
-                subprocess.Popen(cmd)
-                return
-        pyautogui.hotkey("ctrl", "print_screen")
+    return "Screenshot captured."
 
 def lock_screen():
     if _OS == "Windows":
@@ -524,13 +543,18 @@ def wifi_on():
     """Enable WiFi on Windows."""
     if _OS == "Windows":
         try:
-            subprocess.run(
-                ["netsh", "interface", "set", "interface", "Wi-Fi", "enable"],
-                capture_output=True, timeout=8
-            )
+            result = subprocess.run(["netsh", "interface", "show", "interface"],
+                capture_output=True, text=True, timeout=5)
+            wifi_name = "Wi-Fi"
+            for line in result.stdout.splitlines():
+                if any(x in line for x in ["Wi-Fi", "Wireless", "WiFi", "wlan"]):
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        wifi_name = " ".join(parts[3:]); break
+            subprocess.run(["netsh", "interface", "set", "interface", wifi_name, "enable"],
+                capture_output=True, timeout=8)
             return "WiFi enabled."
         except Exception as e:
-            print(f"[Settings] wifi_on failed: {e}")
             return f"Could not enable WiFi: {e}"
     toggle_wifi()
     return "WiFi toggled."
@@ -540,16 +564,92 @@ def wifi_off():
     """Disable WiFi on Windows."""
     if _OS == "Windows":
         try:
-            subprocess.run(
-                ["netsh", "interface", "set", "interface", "Wi-Fi", "disable"],
-                capture_output=True, timeout=8
-            )
+            result = subprocess.run(["netsh", "interface", "show", "interface"],
+                capture_output=True, text=True, timeout=5)
+            wifi_name = "Wi-Fi"
+            for line in result.stdout.splitlines():
+                if any(x in line for x in ["Wi-Fi", "Wireless", "WiFi", "wlan"]):
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        wifi_name = " ".join(parts[3:]); break
+            subprocess.run(["netsh", "interface", "set", "interface", wifi_name, "disable"],
+                capture_output=True, timeout=8)
             return "WiFi disabled."
         except Exception as e:
-            print(f"[Settings] wifi_off failed: {e}")
             return f"Could not disable WiFi: {e}"
     toggle_wifi()
     return "WiFi toggled."
+
+
+def get_battery_level() -> str:
+    """Get current battery level and charging status."""
+    try:
+        import psutil
+        battery = psutil.sensors_battery()
+        if battery is None:
+            return "No battery detected (desktop PC)."
+        pct    = int(battery.percent)
+        status = "charging" if battery.power_plugged else "discharging"
+        secs   = battery.secsleft
+        if secs > 0 and secs != psutil.POWER_TIME_UNLIMITED:
+            h, m = divmod(int(secs) // 60, 60)
+            time_str = f", {h}h {m}m remaining" if h else f", {m}m remaining"
+        else:
+            time_str = ""
+        return f"Battery: {pct}% ({status}{time_str})."
+    except Exception as e:
+        return f"Could not get battery level: {e}"
+
+
+def sleep_computer():
+    """Put the computer to sleep."""
+    if _OS == "Windows":
+        try:
+            subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"],
+                capture_output=True, timeout=5)
+        except Exception as e:
+            print(f"[Settings] sleep_computer failed: {e}")
+    elif _OS == "Darwin":
+        subprocess.run(["pmset", "sleepnow"], capture_output=True)
+    else:
+        subprocess.run(["systemctl", "suspend"], capture_output=True)
+
+
+def hibernate_computer():
+    """Hibernate the computer."""
+    if _OS == "Windows":
+        subprocess.run(["shutdown", "/h"], capture_output=True)
+    elif _OS == "Darwin":
+        subprocess.run(["pmset", "sleepnow"], capture_output=True)
+    else:
+        subprocess.run(["systemctl", "hibernate"], capture_output=True)
+
+
+def cancel_shutdown():
+    """Cancel a pending shutdown or restart."""
+    if _OS == "Windows":
+        subprocess.run(["shutdown", "/a"], capture_output=True)
+    elif _OS == "Darwin":
+        pass  # macOS doesn't have easy cancel
+    else:
+        subprocess.run(["shutdown", "-c"], capture_output=True)
+
+
+def get_wifi_status() -> str:
+    """Get current WiFi connection status and SSID."""
+    if _OS == "Windows":
+        try:
+            result = subprocess.run(["netsh", "wlan", "show", "interfaces"],
+                capture_output=True, text=True, timeout=5)
+            lines = result.stdout
+            ssid_match = re.search(r"SSID\s*:\s*(.+)", lines)
+            state_match = re.search(r"State\s*:\s*(.+)", lines)
+            if ssid_match and state_match:
+                return f"WiFi: {state_match.group(1).strip()} — SSID: {ssid_match.group(1).strip()}"
+            return "WiFi: disconnected or no adapter found."
+        except Exception as e:
+            return f"Could not get WiFi status: {e}"
+    return "WiFi status check not supported on this OS."
 
 
 def toggle_wifi():
@@ -564,22 +664,33 @@ def toggle_wifi():
             capture_output=True, timeout=5)
     elif _OS == "Windows":
         try:
-            # Use netsh — much faster than PowerShell Get-NetAdapter
-            # Check current state then toggle
+            # Find the actual WiFi adapter name dynamically
             result = subprocess.run(
-                ["netsh", "interface", "show", "interface", "Wi-Fi"],
+                ["netsh", "interface", "show", "interface"],
                 capture_output=True, text=True, timeout=5
             )
-            if "Enabled" in result.stdout or "Connected" in result.stdout:
-                subprocess.run(
-                    ["netsh", "interface", "set", "interface", "Wi-Fi", "disable"],
-                    capture_output=True, timeout=8
-                )
+            # Find WiFi adapter name (look for "Wireless" or "Wi-Fi" type)
+            wifi_name = None
+            for line in result.stdout.splitlines():
+                if any(x in line for x in ["Wi-Fi", "Wireless", "WiFi", "wlan"]):
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        wifi_name = " ".join(parts[3:])
+                        break
+            if not wifi_name:
+                wifi_name = "Wi-Fi"  # default fallback
+
+            # Check current state
+            status_result = subprocess.run(
+                ["netsh", "interface", "show", "interface", wifi_name],
+                capture_output=True, text=True, timeout=5
+            )
+            if "Enabled" in status_result.stdout or "Connected" in status_result.stdout:
+                subprocess.run(["netsh", "interface", "set", "interface", wifi_name, "disable"],
+                    capture_output=True, timeout=8)
             else:
-                subprocess.run(
-                    ["netsh", "interface", "set", "interface", "Wi-Fi", "enable"],
-                    capture_output=True, timeout=8
-                )
+                subprocess.run(["netsh", "interface", "set", "interface", wifi_name, "enable"],
+                    capture_output=True, timeout=8)
         except Exception as e:
             print(f"[Settings] toggle_wifi failed: {e}")
     else:
@@ -675,6 +786,9 @@ ACTION_MAP: dict[str, callable] = {
     "wifi_off":            wifi_off,
     "wifi_enable":         wifi_on,
     "wifi_disable":        wifi_off,
+    "sleep":               sleep_computer,
+    "hibernate":           hibernate_computer,
+    "cancel_shutdown":     cancel_shutdown,
     "restart":             restart_computer,
     "shutdown":            shutdown_computer,
 }
@@ -762,6 +876,24 @@ def computer_settings(
 
     if action in ("device_info", "get_device_info", "system_info", "pc_info", "computer_info"):
         return get_device_info()
+
+    if action in ("battery", "battery_level", "get_battery", "battery_status"):
+        return get_battery_level()
+
+    if action in ("wifi_status", "get_wifi", "wifi_info", "wifi"):
+        return get_wifi_status()
+
+    if action in ("sleep", "suspend"):
+        sleep_computer()
+        return "Putting computer to sleep, boss."
+
+    if action in ("hibernate",):
+        hibernate_computer()
+        return "Hibernating computer, boss."
+
+    if action in ("cancel_shutdown", "abort_shutdown", "cancel_restart"):
+        cancel_shutdown()
+        return "Shutdown cancelled, boss."
 
     if action in ("type_text", "write_on_screen", "type", "write"):
         text = str(value or params.get("text", "")).strip()
