@@ -328,16 +328,57 @@ class JarvisLive:
             self.ui.set_state("LISTENING")
 
     def speak(self, text: str):
-        """Speak text via ElevenLabs TTS (non-blocking)."""
+        """Speak text via TTS.
+        - Short confirmations (< 60 chars) use SAPI to save ElevenLabs quota.
+        - Real conversational responses use ElevenLabs for natural voice.
+        """
         if not text:
             return
         self.ui.write_log(f"Jarvis: {text[:120]}")
+
+        # Save ElevenLabs quota: use SAPI for short system confirmations
+        # These are action confirmations, not conversational responses
+        _SHORT_CONFIRMATIONS = {
+            "volume up, boss.", "volume down, boss.",
+            "brightness up, boss.", "brightness down, boss.",
+            "done, boss.", "screenshot taken, boss.",
+            "muted, boss.", "unmuted, boss.",
+            "deep analysis mode disabled, boss. back to fast mode.",
+            "deep analysis mode enabled, boss. i will think carefully.",
+            "opening world monitor now, boss.",
+        }
+        text_lower = text.lower().strip()
+        use_sapi   = (
+            len(text) < 80
+            and (
+                text_lower in _SHORT_CONFIRMATIONS
+                or text_lower.startswith(("done,", "opened ", "closed ", "volume ", "brightness ",
+                                          "wifi ", "screenshot", "copied", "moved", "renamed",
+                                          "deleted", "created ", "saved ", "typed "))
+            )
+        )
+
+        if use_sapi:
+            # Use SAPI directly — free, instant, no quota used
+            try:
+                from tts import _sapi_speak
+                _sapi_speak(text)
+                return
+            except Exception:
+                pass   # fall through to ElevenLabs if SAPI fails
+
         self._tts.speak(text)
 
     def speak_error(self, tool_name: str, error: str):
-        short = str(error)[:120]
-        self.ui.write_log(f"ERR: {tool_name} — {short}")
-        self._tts.speak(f"Sir, {tool_name} encountered an error. {short}")
+        """Speak errors via SAPI only — never waste ElevenLabs quota on errors."""
+        short = str(error)[:80]
+        self.ui.write_log(f"ERR: {tool_name} -- {short}")
+        # Use SAPI for errors — save ElevenLabs for real speech
+        try:
+            from tts import _sapi_speak
+            _sapi_speak(f"{tool_name} error: {short}")
+        except Exception:
+            self._tts.speak(f"Error in {tool_name}, boss.")
 
     def _build_config(self) -> dict:
         """Build system prompt and tool definitions for Claude."""
@@ -924,7 +965,19 @@ class JarvisLive:
                     if len(query) > 2:
                         r = await self._execute_tool("web_search", {"query": query})
                         result = r.get("result", "") if isinstance(r, dict) else str(r)
-                        self.speak(result[:300] if result else "No results found, boss.")
+                        # Web search results are long — use SAPI to save ElevenLabs quota
+                        # Only speak a short summary via ElevenLabs
+                        if result:
+                            lines = [l.strip() for l in result.splitlines() if l.strip()]
+                            # Find first real headline line
+                            headline = next((l for l in lines if len(l) > 20 and not l.startswith("http")), "")
+                            if headline:
+                                self.speak(f"Here's what I found, boss: {headline[:200]}")
+                            else:
+                                self.speak("Search complete, boss. Check the log for results.")
+                            self.ui.write_log(f"[search] {result[:400]}")
+                        else:
+                            self.speak("No results found, boss.")
                         _handled = True
 
                 # Weather
@@ -1163,7 +1216,12 @@ class JarvisLive:
                     else:
                         msg = f"I hit an error, boss: {err_str[:80]}"
                     self.ui.write_log(f"ERR: {msg}")
-                    self.speak(msg)
+                    # Use SAPI for error messages — save ElevenLabs for real responses
+                    try:
+                        from tts import _sapi_speak
+                        _sapi_speak(msg)
+                    except Exception:
+                        self.speak(msg)
                     full_out_log = []
 
                 finally:
