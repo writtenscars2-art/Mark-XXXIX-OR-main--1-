@@ -1395,7 +1395,30 @@ class JarvisLive:
         # Noise phrases to filter — these are NEVER valid commands
         _NOISE_PHRASES = {
             "", "uh", "um", "hmm", "hm", "ah", "mm", "mmm", "mhm",
-            "uh huh", "the", "a", "oh", "eh",
+            "uh huh", "the", "a", "oh", "eh", "okay", "ok",
+            "thank you", "thanks", "you", "i", "yes", "no",
+            "yeah", "yep", "nope", "hey", "hi", "hello",
+        }
+        # ── Hallucination blocklist ──────────────────────────────────────
+        # Scribe commonly hallucinates these phrases from background audio.
+        # Any transcript that EXACTLY matches one of these is silently dropped.
+        _HALLUCINATION_EXACT = {
+            "thank you", "thank you.", "thanks", "thanks.",
+            "you", "you.", "i", "i.", "yes", "yes.", "no", "no.",
+            "okay", "okay.", "ok", "ok.", "right", "right.",
+            "sure", "sure.", "hmm", "hmm.", "hm", "hm.",
+            "bye", "bye.", "bye bye", "bye bye.",
+            "uh", "um", "ah", "oh", "eh",
+            "wait", "wait.", "stop", "stop.",
+            "what", "what.", "yeah", "yeah.",
+            "hey", "hey.", "hi", "hi.", "hello", "hello.",
+            "jarvis", "jarvis.", "j.a.r.v.i.s",
+            "please", "please.", "go", "go.",
+            "i see", "i see.", "i see that", "i see that.",
+            "of course", "of course.", "certainly", "certainly.",
+            "all right", "all right.", "alright", "alright.",
+            "i understand", "i understand.",
+            "one moment", "one moment.", "just a moment", "just a moment.",
         }
         # Single-word responses that ARE valid — never filter these
         _VALID_SINGLE_WORDS = {
@@ -1410,16 +1433,21 @@ class JarvisLive:
             r"^\[.*\]$",          # pure Scribe sound tags like [music] [applause]
         ]
 
-        SAMPLE_RATE    = 44100
-        CHANNELS       = 1
-        CHUNK_FRAMES   = 1024
-        # RMS thresholds (for int16 range 0-32768)
-        # Lowered SPEECH_RMS so quieter/accented speech is detected from the start
-        SILENCE_RMS    = 300    # below this = silence (was 400)
-        SPEECH_RMS     = 500    # above this = speech detected (was 700 — too high for some accents)
-        MIN_SPEECH_SEC = 0.3    # ignore clips shorter than this (was 0.5 — too long, cut "yes"/"ok")
-        MAX_SPEECH_SEC = 20.0   # max recording length (was 15s)
-        SILENCE_END_SEC = 1.2   # stop after 1.2s of silence (was 0.8 — too short for paused speech)
+        SAMPLE_RATE     = 44100
+        CHANNELS        = 1
+        CHUNK_FRAMES    = 1024
+        # ── VAD thresholds ───────────────────────────────────────────────
+        # SPEECH_RMS raised so keyboard clicks / chair noise don't trigger recording.
+        # If your mic is far away and quiet, lower SPEECH_RMS toward 600.
+        SILENCE_RMS     = 350    # below this = silence
+        SPEECH_RMS      = 800    # above this = speech onset detected
+        MIN_SPEECH_SEC  = 0.6    # ignore clips shorter than 0.6s (was 0.3 — too short, caused hallucinations)
+        MAX_SPEECH_SEC  = 20.0
+        SILENCE_END_SEC = 1.0    # stop recording after 1s of silence
+
+        # Minimum average RMS of the full recording — clips quieter than this
+        # are near-silent even if they passed the onset threshold, discard them.
+        MIN_AVG_RMS     = 300
 
         def _chunk_rms(chunk: np.ndarray) -> float:
             """RMS of int16 chunk (range 0–32768)."""
@@ -1507,10 +1535,11 @@ class JarvisLive:
                                 except Exception:
                                     pass
                                 _time.sleep(0.05)
-                            # After speaking stops: wait 700ms + drain 30 chunks
-                            # This prevents TTS audio echo from being mis-transcribed as a command
-                            _time.sleep(0.7)
-                            for _ in range(30):
+                            # After speaking stops: wait 1.2s + drain 60 chunks
+                            # This prevents TTS audio echo from being transcribed as a command.
+                            # 1.2s is enough for ElevenLabs PCM to fully flush from the speaker.
+                            _time.sleep(1.2)
+                            for _ in range(60):
                                 try:
                                     stream.read(CHUNK_FRAMES)
                                 except Exception:
@@ -1556,6 +1585,15 @@ class JarvisLive:
                         if not frames or elapsed < MIN_SPEECH_SEC:
                             if elapsed > 0:
                                 print(f"[JARVIS] Clip too short ({elapsed:.2f}s) — skipped")
+                            continue
+
+                        # ── ENERGY GATE ──────────────────────────────────────
+                        # Reject near-silent clips even if they passed the onset
+                        # threshold — these cause Scribe to hallucinate words.
+                        all_audio  = np.concatenate(frames, axis=0).flatten()
+                        avg_rms    = float(np.sqrt(np.mean(all_audio.astype(np.float64) ** 2)))
+                        if avg_rms < MIN_AVG_RMS:
+                            print(f"[JARVIS] Low energy clip (avg RMS {avg_rms:.0f}) — skipped")
                             continue
 
                         # ── TRANSCRIBE ──
@@ -1608,6 +1646,8 @@ class JarvisLive:
                         # Strip Scribe sound-event tags like [outro jingle], [clattering], [music]
                         # These are NEVER voice commands — always background audio
                         clean_text = re.sub(r"\[.*?\]", "", text).strip()
+                        # Also strip leading/trailing punctuation Scribe adds
+                        clean_text = clean_text.strip(".,!?;: ")
 
                         if not clean_text:
                             print(f"[JARVIS] Scribe tag only — filtered: {text!r}")
@@ -1615,6 +1655,12 @@ class JarvisLive:
 
                         text_lower = clean_text.lower().rstrip(".,!? ")
                         word_count = len(clean_text.split())
+
+                        # ── Hallucination blocklist ──────────────────────────
+                        # Drop known Scribe hallucinations before anything else
+                        if text_lower in _HALLUCINATION_EXACT or clean_text.lower() in _HALLUCINATION_EXACT:
+                            print(f"[JARVIS] Hallucination blocked: {clean_text!r}")
+                            continue
 
                         # Allow known single-word commands through regardless
                         if word_count == 1 and text_lower in _VALID_SINGLE_WORDS:
