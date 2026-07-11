@@ -93,9 +93,10 @@ desktop_control
   path: string (optional)
   task: string (optional)
 
-youtube_video
-  action: "play" | "summarize" | "trending" (required)
-  query: string (for play)
+video_search
+  action: "play" | "search_all" | "summarize" | "trending" | "open_channel" (required)
+  query: string (for play/search_all)
+  platform: "youtube" | "tiktok" | "instagram" | "twitter" | "reddit" | "facebook" | "twitch" | "vimeo" (default: youtube)
 
 weather_report
   city: string (required)

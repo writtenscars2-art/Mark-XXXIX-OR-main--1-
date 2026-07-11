@@ -41,7 +41,7 @@ from actions.send_message      import send_message
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
 from actions.screen_processor  import screen_process
-from actions.youtube_video     import youtube_video
+from actions.video_search      import video_search
 from actions.desktop           import desktop_control
 from actions.browser_control   import browser_control
 from actions.file_controller   import file_controller
@@ -161,9 +161,9 @@ TOOL_DECLARATIONS = [
         "parameters": {"type": "object", "properties": {"date": {"type": "string"}, "time": {"type": "string"}, "message": {"type": "string"}}, "required": ["date", "time", "message"]}
     },
     {
-        "name": "youtube_video",
-        "description": "Plays, searches, summarizes or shows trending YouTube videos.",
-        "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "query": {"type": "string"}, "save": {"type": "boolean"}, "region": {"type": "string"}, "url": {"type": "string"}}, "required": []}
+        "name": "video_search",
+        "description": "Searches, plays or streams videos from YouTube, TikTok, Instagram, Twitter/X, Reddit, Facebook, Twitch, Vimeo and more. Use this for ANY video request on ANY platform. Actions: play (find and open a video), search_all (search across platforms), summarize (summarize a YouTube video), trending (show trending videos), open_channel (open a channel/profile).",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "play | search_all | summarize | trending | open_channel"}, "query": {"type": "string"}, "platform": {"type": "string", "description": "youtube | tiktok | instagram | twitter | reddit | facebook | twitch | vimeo | dailymotion | rumble"}, "platforms": {"type": "array", "items": {"type": "string"}}, "url": {"type": "string"}, "region": {"type": "string"}, "channel": {"type": "string"}, "save": {"type": "boolean"}}, "required": []}
     },
     {
         "name": "screen_process",
@@ -177,8 +177,8 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "browser_control",
-        "description": "Controls the web browser: open a specific URL, search the web in browser, click elements, scroll, fill forms. Use when user says 'open website', 'go to', 'browse to', 'search in browser'.",
-        "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "go_to, search, click, scroll, type, press, get_text, close"}, "url": {"type": "string"}, "query": {"type": "string"}, "selector": {"type": "string"}, "text": {"type": "string"}, "direction": {"type": "string"}, "key": {"type": "string"}, "incognito": {"type": "boolean"}}, "required": ["action"]}
+        "description": "Controls the web browser: open a URL, search the web, navigate, click, scroll, type, bookmark, zoom, get page text, screenshot. Use when user says 'open website', 'go to', 'browse to', 'search in browser', 'open my browser', 'open browser'. For 'open browser' use action=open_browser. For incognito/private mode set incognito=true.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "open_browser, go_to, search, navigate_current, new_tab, close_tab, scroll, click, type, back, forward, refresh, press, zoom_in, zoom_out, find, bookmark, downloads, history, settings, get_text, screenshot"}, "url": {"type": "string"}, "query": {"type": "string"}, "selector": {"type": "string"}, "text": {"type": "string"}, "direction": {"type": "string"}, "key": {"type": "string"}, "engine": {"type": "string", "description": "google | bing | duckduckgo | youtube | amazon | reddit | twitter | wikipedia"}, "incognito": {"type": "boolean"}}, "required": ["action"]}
     },
     {
         "name": "file_controller",
@@ -187,8 +187,8 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "desktop_control",
-        "description": "Controls the Windows desktop: change wallpaper, organize or clean desktop icons, list desktop items.",
-        "parameters": {"type": "object", "properties": {"action": {"type": "string"}, "path": {"type": "string"}, "url": {"type": "string"}, "mode": {"type": "string"}, "task": {"type": "string"}}, "required": ["action"]}
+        "description": "Controls the Windows desktop: set/get wallpaper, organize or clean desktop icons, list desktop items, create shortcuts, pin apps to taskbar, show desktop, open desktop folder.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string", "description": "wallpaper | wallpaper_url | current_wallpaper | organize | clean | list | stats | create_shortcut | pin_to_taskbar | show_desktop | open_desktop_folder | task"}, "path": {"type": "string"}, "url": {"type": "string"}, "mode": {"type": "string", "description": "by_type or by_date"}, "name": {"type": "string"}, "task": {"type": "string"}}, "required": ["action"]}
     },
     {
         "name": "code_helper",
@@ -415,8 +415,8 @@ class JarvisLive:
                 r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
                 result = r or "Reminder set."
 
-            elif tool_name == "youtube_video":
-                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
+            elif tool_name == "video_search":
+                r = await loop.run_in_executor(None, lambda: video_search(parameters=args, response=None, player=self.ui, speak=self.speak))
                 result = r or "Done."
             elif tool_name == "file_processor":
                 if not args.get("file_path") and self.ui.current_file:

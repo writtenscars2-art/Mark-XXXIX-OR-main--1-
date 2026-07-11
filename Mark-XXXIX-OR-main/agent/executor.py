@@ -202,9 +202,9 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         from actions.reminder import reminder
         return reminder(parameters=parameters, player=None) or "Done."
 
-    elif tool == "youtube_video":
-        from actions.youtube_video import youtube_video
-        return youtube_video(parameters=parameters, player=None) or "Done."
+    elif tool == "video_search":
+        from actions.video_search import video_search
+        return video_search(parameters=parameters, player=None) or "Done."
 
     elif tool == "weather_report":
         from actions.weather_report import weather_action
