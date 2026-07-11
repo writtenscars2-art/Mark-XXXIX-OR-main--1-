@@ -1,17 +1,11 @@
 """
 video_search.py — Multi-platform video search and playback for JARVIS.
 
-Supported platforms:
-  YouTube   — search, play, trending, summarize transcript
-  TikTok    — search (opens browser)
-  Instagram — search Reels (opens browser)
-  Twitter/X — search videos (opens browser)
-  Reddit    — search video posts (opens browser)
-  Facebook  — search videos (opens browser)
-  Twitch    — open channel or search streams
-  Vimeo     — search videos (opens browser)
+YouTube : scrape video results → build HTML page → open in user's browser
+Others  : open platform search page directly in user's browser
 
-All platforms use subprocess to open the user's real browser — no API keys needed.
+Platforms: YouTube, TikTok, Instagram, Twitter/X, Reddit, Facebook,
+           Twitch, Vimeo, Dailymotion, Rumble
 """
 
 import json
@@ -20,6 +14,7 @@ import sys
 import time
 import subprocess
 import shutil
+import tempfile
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -54,10 +49,8 @@ _HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-_YT_VIDEO_FILTER = "EgIQAQ%3D%3D"   # YouTube "Videos only" filter
+_YT_VIDEO_FILTER = "EgIQAQ%3D%3D"
 
-
-# ── Config helpers ─────────────────────────────────────────────────────────────
 
 def _load_config() -> dict:
     try:
@@ -96,7 +89,7 @@ def _open_url(url: str) -> None:
         else:
             subprocess.Popen(["cmd", "/c", "start", "", url],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
-        time.sleep(0.5)
+        time.sleep(0.6)
     except Exception as e:
         print(f"[VideoSearch] open_url failed: {e}")
         try:
@@ -106,30 +99,142 @@ def _open_url(url: str) -> None:
             pass
 
 
-# ── YouTube ───────────────────────────────────────────────────────────────────
+# ── YouTube scraping ──────────────────────────────────────────────────────────
 
-def _yt_scrape_first_video(query: str) -> str | None:
-    """Scrape the first non-Shorts video URL from YouTube search results."""
+def _yt_scrape_videos(query: str, max_results: int = 8) -> list[dict]:
+    """
+    Scrape YouTube search results and return a list of video dicts:
+    {video_id, title, channel, thumbnail_url, watch_url, duration}
+    """
     if not _REQUESTS_OK:
-        return None
+        return []
     url = (f"https://www.youtube.com/results"
            f"?search_query={quote_plus(query)}&sp={_YT_VIDEO_FILTER}")
     try:
         r    = requests.get(url, headers=_HEADERS, timeout=10)
         html = r.text
+
+        # Extract video IDs (deduplicated, no Shorts)
         ids  = re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', html)
         seen = set()
+        unique_ids = []
         for vid in ids:
             if vid in seen:
                 continue
             seen.add(vid)
             if f"/shorts/{vid}" in html:
                 continue
-            return f"https://www.youtube.com/watch?v={vid}"
+            unique_ids.append(vid)
+            if len(unique_ids) >= max_results:
+                break
+
+        if not unique_ids:
+            return []
+
+        # Extract titles — paired with videoIds in the JSON
+        titles   = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"\}\]', html)
+        channels = re.findall(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', html)
+        lengths  = re.findall(r'"lengthText":\{"accessibility":[^}]+\},"simpleText":"([^"]+)"', html)
+
+        results = []
+        for i, vid in enumerate(unique_ids):
+            title   = titles[i]   if i < len(titles)   else query
+            channel = channels[i] if i < len(channels) else "Unknown"
+            dur     = lengths[i]  if i < len(lengths)  else ""
+            results.append({
+                "video_id":      vid,
+                "title":         title,
+                "channel":       channel,
+                "duration":      dur,
+                "thumbnail_url": f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg",
+                "watch_url":     f"https://www.youtube.com/watch?v={vid}",
+            })
+        return results
+
     except Exception as e:
         print(f"[VideoSearch] YT scrape failed: {e}")
-    return None
+    return []
 
+
+# ── HTML results page builder ─────────────────────────────────────────────────
+
+def _build_results_page(query: str, videos: list[dict], platform: str = "YouTube") -> str:
+    """
+    Build a self-contained HTML results page with video thumbnails and titles.
+    Each card links directly to the video. Saved as a temp file and opened in browser.
+    Returns the file:// URL of the created HTML page.
+    """
+    cards_html = ""
+    for v in videos:
+        title   = v["title"].replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+        channel = v.get("channel", "").replace("<", "&lt;")
+        dur     = v.get("duration", "")
+        thumb   = v.get("thumbnail_url", "")
+        href    = v.get("watch_url", "#")
+        cards_html += f"""
+        <a class="card" href="{href}" target="_blank">
+            <div class="thumb-wrap">
+                <img src="{thumb}" alt="{title}" loading="lazy" onerror="this.src='https://via.placeholder.com/320x180/001a2e/00d4ff?text=No+Thumbnail'">
+                {"<span class='dur'>" + dur + "</span>" if dur else ""}
+            </div>
+            <div class="info">
+                <div class="title">{title}</div>
+                <div class="channel">{channel}</div>
+            </div>
+        </a>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JARVIS — {platform} Results: {query}</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:#00060a;color:#8ffcff;font-family:'Segoe UI',sans-serif;padding:20px}}
+  h1{{color:#00d4ff;font-size:1.2rem;margin-bottom:4px;letter-spacing:1px}}
+  .sub{{color:#3a8a9a;font-size:.85rem;margin-bottom:20px}}
+  .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}}
+  .card{{background:#010d14;border:1px solid #0d3347;border-radius:8px;overflow:hidden;
+         text-decoration:none;color:inherit;transition:border-color .2s,transform .15s}}
+  .card:hover{{border-color:#00d4ff;transform:translateY(-2px)}}
+  .thumb-wrap{{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;background:#001520}}
+  .thumb-wrap img{{width:100%;height:100%;object-fit:cover}}
+  .dur{{position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,.8);color:#fff;
+        font-size:.72rem;padding:2px 5px;border-radius:3px}}
+  .info{{padding:10px 12px 12px}}
+  .title{{font-size:.9rem;color:#d8f8ff;font-weight:600;line-height:1.3;
+          display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}}
+  .channel{{font-size:.78rem;color:#3a8a9a;margin-top:5px}}
+  .hdr{{display:flex;align-items:center;gap:12px;margin-bottom:16px}}
+  .logo{{color:#00d4ff;font-size:1.4rem;font-weight:700;letter-spacing:2px}}
+  .search-box{{flex:1;background:#010f18;border:1px solid #0d3347;border-radius:6px;
+               padding:8px 14px;color:#8ffcff;font-size:.9rem;outline:none}}
+  .search-box:focus{{border-color:#00d4ff}}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <span class="logo">J.A.R.V.I.S</span>
+  <input class="search-box" value="{query}" readonly title="Search query">
+</div>
+<h1>◈ {platform} Results</h1>
+<p class="sub">{len(videos)} video{"s" if len(videos) != 1 else ""} found for &ldquo;{query}&rdquo; &mdash; click any card to watch</p>
+<div class="grid">{cards_html}
+</div>
+</body>
+</html>"""
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".html", delete=False,
+        prefix="jarvis_video_", encoding="utf-8"
+    )
+    tmp.write(html)
+    tmp.close()
+    return Path(tmp.name).as_uri()
+
+
+# ── YouTube trending & transcript helpers ─────────────────────────────────────
 
 def _yt_extract_video_id(url: str) -> str | None:
     m = re.search(r"(?:v=|\/v\/|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})", url)
@@ -140,9 +245,9 @@ def _yt_get_transcript(video_id: str) -> str | None:
     if not _TRANSCRIPT_OK:
         return None
     try:
-        tl     = YouTubeTranscriptApi.list_transcripts(video_id)
-        langs  = ["en", "en-US", "en-GB", "fr", "de", "es", "pt", "it", "ja", "ko", "ar", "ru"]
-        tr     = None
+        tl    = YouTubeTranscriptApi.list_transcripts(video_id)
+        langs = ["en", "en-US", "en-GB", "fr", "de", "es", "pt", "it", "ja", "ko", "ar", "ru"]
+        tr    = None
         try:
             tr = tl.find_manually_created_transcript(langs)
         except Exception:
@@ -161,14 +266,12 @@ def _yt_get_transcript(video_id: str) -> str | None:
         return None
 
 
-def _yt_summarize(transcript: str, url: str, speak=None) -> str:
-    """Summarize a YouTube transcript via NVIDIA/Groq."""
+def _yt_summarize(transcript: str, url: str) -> str:
     try:
         from openai import OpenAI
-        cfg       = _load_config()
-        groq_key  = cfg.get("groq_api_key",  "").strip()
-        nim_key   = cfg.get("nvidia_api_key", "").strip()
-
+        cfg      = _load_config()
+        groq_key = cfg.get("groq_api_key",  "").strip()
+        nim_key  = cfg.get("nvidia_api_key", "").strip()
         if groq_key and groq_key not in ("", "YOUR_GROQ_KEY_HERE"):
             client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
             model  = cfg.get("groq_model", "llama-3.3-70b-versatile")
@@ -177,20 +280,16 @@ def _yt_summarize(transcript: str, url: str, speak=None) -> str:
             model  = cfg.get("nvidia_model", "meta/llama-3.3-70b-instruct")
         else:
             return "No AI key configured for summarization."
-
-        trunc = transcript[:12000]
-        resp  = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": (
-                    "You are JARVIS. Summarize the YouTube transcript clearly and concisely. "
-                    "Give a 1-sentence overview then 3-5 bullet-point key takeaways. "
-                    "Address the user as 'boss'."
-                )},
-                {"role": "user", "content": f"Transcript:\n{trunc}"},
+                {"role": "system", "content":
+                    "You are JARVIS. Summarize the YouTube transcript concisely. "
+                    "1-sentence overview then 3-5 bullet-point key takeaways. "
+                    "Address the user as 'boss'."},
+                {"role": "user", "content": f"Transcript:\n{transcript[:12000]}"},
             ],
-            max_tokens=500,
-            temperature=0.3,
+            max_tokens=500, temperature=0.3,
         )
         return (resp.choices[0].message.content or "Could not summarize.").strip()
     except Exception as e:
@@ -202,20 +301,26 @@ def _yt_trending(region: str = "US", max_results: int = 8) -> list[dict]:
         return []
     url = f"https://www.youtube.com/feed/trending?gl={region.upper()}"
     try:
-        r       = requests.get(url, headers=_HEADERS, timeout=12)
-        html    = r.text
-        titles  = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"\}\]', html)
-        chans   = re.findall(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', html)
+        r      = requests.get(url, headers=_HEADERS, timeout=12)
+        html   = r.text
+        titles = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"\}\]', html)
+        chans  = re.findall(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', html)
+        ids    = re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', html)
         results, seen = [], set()
         for i, title in enumerate(titles):
             if title in seen or len(title) < 5:
                 continue
             seen.add(title)
+            vid = ids[i] if i < len(ids) else ""
             results.append({
-                "rank":    len(results) + 1,
-                "title":   title,
-                "channel": chans[i] if i < len(chans) else "Unknown",
-                "platform": "YouTube",
+                "rank":          len(results) + 1,
+                "title":         title,
+                "channel":       chans[i] if i < len(chans) else "Unknown",
+                "video_id":      vid,
+                "thumbnail_url": f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg" if vid else "",
+                "watch_url":     f"https://www.youtube.com/watch?v={vid}" if vid else "",
+                "duration":      "",
+                "platform":      "YouTube",
             })
             if len(results) >= max_results:
                 break
@@ -225,27 +330,35 @@ def _yt_trending(region: str = "US", max_results: int = 8) -> list[dict]:
         return []
 
 
-# ── Platform-specific search URL builders ────────────────────────────────────
+# ── Platform search URL builders ──────────────────────────────────────────────
 
 def _platform_search_url(platform: str, query: str) -> str:
     q = quote_plus(query)
     urls = {
-        "youtube":   f"https://www.youtube.com/results?search_query={q}&sp={_YT_VIDEO_FILTER}",
-        "tiktok":    f"https://www.tiktok.com/search?q={q}",
-        "instagram": f"https://www.instagram.com/explore/search/keyword/?q={q}",
-        "twitter":   f"https://twitter.com/search?q={q}&f=video",
-        "x":         f"https://twitter.com/search?q={q}&f=video",
-        "reddit":    f"https://www.reddit.com/search/?q={q}&type=link",
-        "facebook":  f"https://www.facebook.com/search/videos/?q={q}",
-        "twitch":    f"https://www.twitch.tv/search?term={q}",
-        "vimeo":     f"https://vimeo.com/search?q={q}",
+        "youtube":     f"https://www.youtube.com/results?search_query={q}&sp={_YT_VIDEO_FILTER}",
+        "tiktok":      f"https://www.tiktok.com/search?q={q}",
+        "instagram":   f"https://www.instagram.com/explore/search/keyword/?q={q}",
+        "twitter":     f"https://twitter.com/search?q={q}&f=video",
+        "x":           f"https://twitter.com/search?q={q}&f=video",
+        "reddit":      f"https://www.reddit.com/search/?q={q}&type=link",
+        "facebook":    f"https://www.facebook.com/search/videos/?q={q}",
+        "twitch":      f"https://www.twitch.tv/search?term={q}",
+        "vimeo":       f"https://vimeo.com/search?q={q}",
         "dailymotion": f"https://www.dailymotion.com/search/{q}",
-        "rumble":    f"https://rumble.com/search/video?q={q}",
+        "rumble":      f"https://rumble.com/search/video?q={q}",
     }
     return urls.get(platform.lower(), urls["youtube"])
 
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
+_PLATFORM_NAMES = {
+    "tiktok": "TikTok", "instagram": "Instagram", "twitter": "Twitter/X",
+    "x": "Twitter/X", "reddit": "Reddit", "facebook": "Facebook",
+    "twitch": "Twitch", "vimeo": "Vimeo", "dailymotion": "Dailymotion",
+    "rumble": "Rumble", "youtube": "YouTube",
+}
+
+
+# ── Action handlers ───────────────────────────────────────────────────────────
 
 def _handle_play(params: dict, player) -> str:
     query    = params.get("query", "").strip()
@@ -258,95 +371,95 @@ def _handle_play(params: dict, player) -> str:
         player.write_log(f"[VideoSearch] {platform}: {query}")
 
     if platform == "youtube":
-        # Try to scrape direct video URL first
-        video_url = _yt_scrape_first_video(query)
-        if video_url:
-            print(f"[VideoSearch] Playing: {video_url}")
-            _open_url(video_url)
-            return f"Playing '{query}' on YouTube, boss."
-        # Fallback: open YouTube search page
+        # Scrape multiple results → build HTML page → open in browser
+        videos = _yt_scrape_videos(query, max_results=8)
+
+        if videos:
+            print(f"[VideoSearch] Found {len(videos)} videos for '{query}'")
+            # If only 1 result — open it directly; otherwise show the results page
+            if len(videos) == 1:
+                _open_url(videos[0]["watch_url"])
+                return f"Playing '{videos[0]['title']}' on YouTube, boss."
+
+            page_url = _build_results_page(query, videos, platform="YouTube")
+            _open_url(page_url)
+            return (
+                f"Found {len(videos)} YouTube videos for '{query}', boss. "
+                f"Results are displayed in your browser — click any card to watch."
+            )
+
+        # Fallback: open YouTube search page directly
+        print(f"[VideoSearch] Scrape returned nothing — opening YouTube search")
         fallback = _platform_search_url("youtube", query)
         _open_url(fallback)
-        return f"Opened YouTube search for '{query}', boss."
+        return f"Opened YouTube search for '{query}' in your browser, boss."
 
-    # Other platforms — open their search page
-    url = _platform_search_url(platform, query)
+    # Non-YouTube platforms — open their search page directly
+    url  = _platform_search_url(platform, query)
+    name = _PLATFORM_NAMES.get(platform, platform.capitalize())
     _open_url(url)
-    platform_names = {
-        "tiktok": "TikTok", "instagram": "Instagram", "twitter": "Twitter/X",
-        "x": "Twitter/X", "reddit": "Reddit", "facebook": "Facebook",
-        "twitch": "Twitch", "vimeo": "Vimeo", "dailymotion": "Dailymotion",
-        "rumble": "Rumble",
-    }
-    name = platform_names.get(platform, platform.capitalize())
-    return f"Opened {name} search for '{query}', boss."
+    return f"Opened {name} search for '{query}' in your browser, boss."
 
 
 def _handle_search_all(params: dict, player) -> str:
-    """Search across multiple platforms and return URL list."""
+    """Search across multiple platforms — builds results page for YouTube, opens others."""
     query     = params.get("query", "").strip()
     platforms = params.get("platforms", ["youtube", "tiktok", "instagram", "twitter", "reddit"])
     if not query:
         return "Please provide a search query, boss."
-
     if isinstance(platforms, str):
         platforms = [p.strip() for p in platforms.split(",")]
 
-    lines = [f"Video search results for '{query}':\n"]
-    for p in platforms:
-        url  = _platform_search_url(p, query)
-        name = p.capitalize()
-        lines.append(f"• {name}: {url}")
+    # Open YouTube with HTML results page first
+    if "youtube" in platforms:
+        videos = _yt_scrape_videos(query, max_results=6)
+        if videos:
+            page_url = _build_results_page(query, videos, "YouTube")
+            _open_url(page_url)
+        else:
+            _open_url(_platform_search_url("youtube", query))
 
-    # Open the first platform (YouTube by default)
-    first_url = _platform_search_url(platforms[0] if platforms else "youtube", query)
-    _open_url(first_url)
-    lines.append(f"\nOpened {platforms[0].capitalize()} in your browser, boss.")
-    return "\n".join(lines)
+    # Open remaining platforms in browser tabs
+    others = [p for p in platforms if p != "youtube"]
+    for p in others[:3]:   # max 3 extra tabs
+        _open_url(_platform_search_url(p, query))
+        time.sleep(0.4)
+
+    names = ", ".join(_PLATFORM_NAMES.get(p, p.capitalize()) for p in platforms)
+    return f"Searching '{query}' across {names} in your browser, boss."
 
 
 def _handle_summarize(params: dict, player, speak) -> str:
     if not _TRANSCRIPT_OK:
         return "youtube-transcript-api is not installed. Run: pip install youtube-transcript-api"
-
     url = params.get("url", "").strip()
     if not url:
         return "Please provide a YouTube video URL to summarize, boss."
     if "youtube.com" not in url and "youtu.be" not in url:
         return "Summarization currently supports YouTube links only, boss."
-
     video_id = _yt_extract_video_id(url)
     if not video_id:
         return "Could not extract video ID from that URL, boss."
-
     if player:
         player.write_log(f"[VideoSearch] Summarizing: {url}")
     if speak:
         speak("Fetching transcript now, boss. One moment.")
-
     transcript = _yt_get_transcript(video_id)
     if not transcript:
         return "I couldn't retrieve a transcript for that video, boss."
-
     if speak:
-        speak("Transcript retrieved. Generating summary now, boss.")
-
-    summary = _yt_summarize(transcript, url, speak=speak)
-
+        speak("Generating summary now, boss.")
+    summary = _yt_summarize(transcript, url)
     if params.get("save", False):
         from datetime import datetime
         ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = Path.home() / "Desktop" / f"video_summary_{ts}.txt"
-        path.write_text(
-            f"JARVIS Video Summary\n{'─'*50}\nURL: {url}\n\n{summary}",
-            encoding="utf-8"
-        )
+        path.write_text(f"JARVIS Video Summary\nURL: {url}\n\n{summary}", encoding="utf-8")
         try:
             subprocess.Popen(["notepad.exe", str(path)])
         except Exception:
             pass
         return f"Summary saved to Desktop: {path.name}\n\n{summary}"
-
     return summary
 
 
@@ -355,17 +468,15 @@ def _handle_trending(params: dict, player, speak) -> str:
     platform = params.get("platform", "youtube").lower()
 
     if platform != "youtube":
-        # Other platforms don't have easy programmatic trending — open their trending page
         trending_urls = {
             "tiktok":    "https://www.tiktok.com/trending",
             "instagram": "https://www.instagram.com/explore/",
             "twitter":   "https://twitter.com/explore/tabs/trending",
             "reddit":    "https://www.reddit.com/r/videos/top/?t=day",
-            "youtube":   f"https://www.youtube.com/feed/trending?gl={region}",
         }
-        url = trending_urls.get(platform, trending_urls["youtube"])
+        url = trending_urls.get(platform, f"https://www.youtube.com/feed/trending?gl={region}")
         _open_url(url)
-        return f"Opened {platform.capitalize()} trending in your browser, boss."
+        return f"Opened {_PLATFORM_NAMES.get(platform, platform)} trending in your browser, boss."
 
     if player:
         player.write_log(f"[VideoSearch] Trending: {region}")
@@ -374,11 +485,14 @@ def _handle_trending(params: dict, player, speak) -> str:
     if not trending:
         url = f"https://www.youtube.com/feed/trending?gl={region}"
         _open_url(url)
-        return f"Could not scrape trending list, opened YouTube trending for {region}, boss."
+        return f"Could not scrape trending — opened YouTube trending for {region} in browser, boss."
 
-    lines  = [f"Top trending on YouTube ({region}):"]
-    lines += [f"{v['rank']}. {v['title']} — {v['channel']}" for v in trending]
-    result = "\n".join(lines)
+    # Build results page from trending videos
+    page_url = _build_results_page(f"Trending in {region}", trending, "YouTube Trending")
+    _open_url(page_url)
+
+    result = f"Top trending on YouTube ({region}):\n"
+    result += "\n".join(f"{v['rank']}. {v['title']} — {v['channel']}" for v in trending[:5])
 
     if speak:
         top3   = trending[:3]
@@ -391,13 +505,10 @@ def _handle_trending(params: dict, player, speak) -> str:
 
 
 def _handle_open_channel(params: dict, player) -> str:
-    """Open a specific channel or profile on any platform."""
     channel  = params.get("channel", "").strip()
     platform = params.get("platform", "youtube").lower()
-
     if not channel:
         return "Please provide a channel name, boss."
-
     urls = {
         "youtube":   f"https://www.youtube.com/@{quote_plus(channel)}",
         "tiktok":    f"https://www.tiktok.com/@{quote_plus(channel)}",
@@ -407,7 +518,7 @@ def _handle_open_channel(params: dict, player) -> str:
     }
     url = urls.get(platform, urls["youtube"])
     _open_url(url)
-    return f"Opened {platform.capitalize()} channel: {channel}, boss."
+    return f"Opened {_PLATFORM_NAMES.get(platform, platform)} channel '{channel}' in your browser, boss."
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -420,19 +531,18 @@ def video_search(
     speak=None,
 ) -> str:
     """
-    Multi-platform video search and playback.
+    Multi-platform video search — results displayed in the user's real browser.
 
     parameters:
         action   : play | search_all | summarize | trending | open_channel
         query    : search term
         platform : youtube | tiktok | instagram | twitter | reddit |
                    facebook | twitch | vimeo | dailymotion | rumble
-                   (default: youtube for play/trending; opens browser for others)
-        platforms: list of platforms for search_all
+        platforms: list for search_all
         url      : YouTube URL for summarize
-        region   : region code for trending (e.g. US, NG, GB)
-        channel  : channel/username for open_channel
-        save     : bool — save summary to Desktop
+        region   : region code for trending (US, NG, GB, etc.)
+        channel  : username for open_channel
+        save     : save summary to Desktop
     """
     params = parameters or {}
     action = params.get("action", "play").lower().strip()
@@ -444,28 +554,17 @@ def video_search(
     try:
         if action == "play":
             return _handle_play(params, player) or "Done."
-
         elif action == "search_all":
             return _handle_search_all(params, player) or "Done."
-
         elif action == "summarize":
             return _handle_summarize(params, player, speak) or "Done."
-
         elif action == "trending":
             return _handle_trending(params, player, speak) or "Done."
-
         elif action in ("open_channel", "channel"):
             return _handle_open_channel(params, player) or "Done."
-
         else:
-            # Treat unknown action as a play query
-            if action:
-                params["query"] = params.get("query", "") or action
-                return _handle_play(params, player) or "Done."
-            return (
-                "Unknown action. Available: play, search_all, summarize, trending, open_channel."
-            )
-
+            params["query"] = params.get("query", "") or action
+            return _handle_play(params, player) or "Done."
     except Exception as e:
         print(f"[VideoSearch] Error in {action}: {e}")
         return f"Video search failed, boss: {e}"
