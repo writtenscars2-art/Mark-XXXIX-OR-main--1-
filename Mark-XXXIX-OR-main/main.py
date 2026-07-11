@@ -730,7 +730,7 @@ class JarvisLive:
                             pc = plain.choices[0] if plain.choices else None
                             if pc and pc.message.content:
                                 state["text"] = pc.message.content
-                                self.speak(pc.message.content)
+                                # Do NOT call self.speak() here — caller handles TTS
                         except Exception as _pe:
                             print(f"[JARVIS] Plain retry also failed: {_pe}")
                     else:
@@ -769,7 +769,7 @@ class JarvisLive:
                                 msg = choice.message
                                 if msg.content:
                                     state["text"] = msg.content
-                                    self.speak(msg.content)
+                                    # Do NOT call self.speak() here — caller handles TTS
                                 if msg.tool_calls:
                                     for i, tc in enumerate(msg.tool_calls):
                                         state["tc"][i] = {
@@ -954,21 +954,25 @@ class JarvisLive:
                         self.speak(result[:300] if result else f"Could not get weather for {city}, boss.")
                         _handled = True
 
-                # Shutdown / restart / sleep
-                elif ut_lower in ("shutdown", "shut down", "restart", "reboot", "sleep", "hibernate"):
-                    action = "shutdown" if "shut" in ut_lower else ("restart" if "restart" in ut_lower or "reboot" in ut_lower else "sleep")
-                    await self._execute_tool("computer_settings", {"action": action})
-                    _handled = True
-
-                # JARVIS shutdown — "shutdown"/"shut down" alone means close JARVIS, not the PC
+                # JARVIS shutdown — "shutdown"/"shut down" alone = close JARVIS, NOT the PC
+                # Must come BEFORE the computer shutdown block so bare "shutdown" hits here first
                 elif any(phrase in ut_lower for phrase in (
                     "goodbye", "bye jarvis", "exit jarvis", "quit jarvis",
                     "shut down jarvis", "shutdown jarvis", "goodbye jarvis",
                     "turn off jarvis", "close jarvis", "stop jarvis",
                     "jarvis shutdown", "jarvis exit", "jarvis quit",
                     "shutdown", "shut down",
-                )) and not any(x in ut_lower for x in ("computer", "pc", "windows", "system", "my laptop")):
+                )) and not any(x in ut_lower for x in ("computer", "pc", "windows", "system", "my laptop", "device")):
                     await self._execute_tool("shutdown_jarvis", {})
+                    _handled = True
+
+                # PC/computer shutdown — only when user explicitly mentions the computer/PC
+                elif any(kw in ut_lower for kw in ("computer", "pc", "windows", "my laptop", "device")) and \
+                     any(kw in ut_lower for kw in ("shutdown", "shut down", "restart", "reboot", "sleep")):
+                    pc_action = ("restart" if any(k in ut_lower for k in ("restart", "reboot"))
+                                 else "sleep" if "sleep" in ut_lower
+                                 else "shutdown")
+                    await self._execute_tool("computer_settings", {"action": pc_action})
                     _handled = True
 
                 # World Monitor (yes to startup briefing) — open in default browser
@@ -1090,6 +1094,7 @@ class JarvisLive:
                     return clean
 
                 try:
+                    full_out_log = []  # reset for this turn
                     while True:
                         # Build clean message snapshot — no stale tool_calls in history
                         clean_conv    = _clean_conversation(list(conversation))
@@ -1117,8 +1122,9 @@ class JarvisLive:
                                 args_preview = tc["arguments"]
                             print(f"[JARVIS] ─── TOOL SELECTED: {tc['name']} | args: {str(args_preview)[:120]}")
 
-                        if final_text:
-                            full_out_log.append(final_text)
+                        # Do NOT append pre-tool text to full_out_log — it's just the model's
+                        # internal lead-in before calling the tool. Only append final responses
+                        # (the no-tool branch above). This prevents double-speak.
 
                         tc_objects = [
                             {

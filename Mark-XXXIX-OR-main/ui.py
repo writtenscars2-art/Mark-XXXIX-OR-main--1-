@@ -1229,7 +1229,7 @@ class MainWindow(QMainWindow):
             QPushButton:hover {{ background: {C.BORDER_B}; }}
         """)
         self._pin_btn.clicked.connect(self._toggle_ontop)
-        self._ontop = True   # starts pinned
+        self._ontop = False   # starts in full mode; first pin click → compact
         lay.addSpacing(8)
         lay.addWidget(self._pin_btn)
 
@@ -1317,6 +1317,22 @@ class MainWindow(QMainWindow):
                 }}
                 QPushButton:hover {{ background: {C.BORDER_B}; }}
             """)
+            # Remove any old spacing/pin-btn items from the header layout
+            # to avoid duplicates on repeated pin/unpin
+            hdr_lay = self._header_widget.layout()
+            while hdr_lay.count() > 0:
+                item = hdr_lay.itemAt(hdr_lay.count() - 1)
+                if item:
+                    w_item = item.widget()
+                    if w_item is self._pin_btn:
+                        hdr_lay.removeItem(item)
+                        break
+                    elif w_item is None:  # spacer item
+                        hdr_lay.removeItem(item)
+                    else:
+                        break
+                else:
+                    break
             # Re-add to header layout (last widget)
             self._header_widget.layout().addSpacing(8)
             self._header_widget.layout().addWidget(self._pin_btn)
