@@ -1262,37 +1262,39 @@ class MainWindow(QMainWindow):
             self.setMinimumSize(orb_size, orb_size)
             self.setMaximumSize(orb_size, orb_size)
             self.setGeometry(x, y, orb_size, orb_size)
+            self.show()
 
-            # Apply circular mask to make the window appear round
+            # Apply circular mask to centralWidget only — keeps background round
+            # but does NOT clip child widgets like the ✕ button
             from PyQt6.QtGui import QRegion
             circle_region = QRegion(0, 0, orb_size, orb_size, QRegion.RegionType.Ellipse)
-            self.setMask(circle_region)
-
-            self.show()
+            self.centralWidget().setMask(circle_region)
 
             # Make orb fill the whole circular window
             self.hud.setMinimumSize(orb_size, orb_size)
             self.hud.setMaximumSize(orb_size, orb_size)
 
-            # Float ✕ button over orb top-right
-            self._pin_btn.setParent(self.centralWidget())
-            self._pin_btn.setFixedSize(26, 26)
-            # Position near top-right but inside the circle boundary
-            self._pin_btn.move(orb_size - 34, 10)
+            # ✕ button parented to the main window (not centralWidget)
+            # so it is never clipped by the centralWidget mask.
+            # Centered at the top of the circle — always visible, easy to click.
+            self._pin_btn.setParent(self)
+            btn_size = 32
+            self._pin_btn.setFixedSize(btn_size, btn_size)
+            self._pin_btn.move((orb_size - btn_size) // 2, 6)
             self._pin_btn.raise_()
             self._pin_btn.show()
             self._pin_btn.setText("✕")
-            self._pin_btn.setToolTip("Expand full UI")
+            self._pin_btn.setToolTip("Click to expand full UI")
             self._pin_btn.setStyleSheet("""
                 QPushButton {
-                    background: rgba(220,50,50,220);
-                    border: none;
-                    border-radius: 13px;
+                    background: rgba(200,40,40,230);
+                    border: 2px solid rgba(255,120,120,200);
+                    border-radius: 16px;
                     color: white;
                     font-weight: bold;
-                    font-size: 11px;
+                    font-size: 13px;
                 }
-                QPushButton:hover { background: rgba(255,70,70,255); }
+                QPushButton:hover { background: rgba(255,60,60,255); }
             """)
 
         else:
