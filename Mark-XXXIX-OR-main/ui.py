@@ -1237,20 +1237,20 @@ class MainWindow(QMainWindow):
 
     def _toggle_ontop(self):
         """
-        Pin   → compact mode: 200×200 orb-only, frameless, top-center, always-on-top.
+        Pin   → compact mode: circular orb window, frameless, top-center, always-on-top.
         Unpin → full mode: title bar + all panels restored.
         """
         self._ontop = not self._ontop
         screen = QApplication.primaryScreen().availableGeometry()
 
         if self._ontop:
-            # ── COMPACT MODE ───────────────────────────────────────────────
+            # ── COMPACT MODE — circular orb ───────────────────────────────
             self._left_panel.hide()
             self._right_panel.hide()
             self._footer_widget.hide()
             self._header_widget.hide()
 
-            orb_size = 200
+            orb_size = 220   # diameter of the circle
             x = (screen.width() - orb_size) // 2
             y = 4
 
@@ -1262,29 +1262,37 @@ class MainWindow(QMainWindow):
             self.setMinimumSize(orb_size, orb_size)
             self.setMaximumSize(orb_size, orb_size)
             self.setGeometry(x, y, orb_size, orb_size)
+
+            # Apply circular mask to make the window appear round
+            from PyQt6.QtGui import QRegion
+            circle_region = QRegion(0, 0, orb_size, orb_size, QRegion.RegionType.Ellipse)
+            self.setMask(circle_region)
+
             self.show()
 
+            # Make orb fill the whole circular window
             self.hud.setMinimumSize(orb_size, orb_size)
             self.hud.setMaximumSize(orb_size, orb_size)
 
             # Float ✕ button over orb top-right
             self._pin_btn.setParent(self.centralWidget())
-            self._pin_btn.setFixedSize(24, 24)
-            self._pin_btn.move(orb_size - 28, 4)
+            self._pin_btn.setFixedSize(26, 26)
+            # Position near top-right but inside the circle boundary
+            self._pin_btn.move(orb_size - 34, 10)
             self._pin_btn.raise_()
             self._pin_btn.show()
             self._pin_btn.setText("✕")
             self._pin_btn.setToolTip("Expand full UI")
             self._pin_btn.setStyleSheet("""
                 QPushButton {
-                    background: rgba(220,50,50,210);
+                    background: rgba(220,50,50,220);
                     border: none;
-                    border-radius: 12px;
+                    border-radius: 13px;
                     color: white;
                     font-weight: bold;
                     font-size: 11px;
                 }
-                QPushButton:hover { background: rgba(255,70,70,240); }
+                QPushButton:hover { background: rgba(255,70,70,255); }
             """)
 
         else:
@@ -1334,6 +1342,9 @@ class MainWindow(QMainWindow):
                 | Qt.WindowType.WindowCloseButtonHint
                 | Qt.WindowType.WindowStaysOnTopHint
             )
+
+            # 4b. Remove the circular mask — restore rectangular window shape
+            self.clearMask()
 
             # 5. Restore title, sizes and position
             self.setWindowTitle("J.A.R.V.I.S — MARK XXXIX")

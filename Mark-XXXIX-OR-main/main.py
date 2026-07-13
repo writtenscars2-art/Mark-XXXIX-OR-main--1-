@@ -1466,19 +1466,19 @@ class JarvisLive:
         SAMPLE_RATE     = 44100
         CHANNELS        = 1
         CHUNK_FRAMES    = 1024
-        # ── VAD thresholds (tuned for headset mic at normal talking volume) ─
-        # SPEECH_RMS = onset trigger. Headset mics (Realtek) at 30–50cm read
-        # normal speech as 400–900 RMS. 450 catches a calm voice without
-        # triggering on keyboard clicks (~200 RMS) or chair noise (~150 RMS).
-        SILENCE_RMS     = 200    # below this = silence
-        SPEECH_RMS      = 450    # above this = speech onset (was 800 — too high, required shouting)
-        MIN_SPEECH_SEC  = 0.4    # ignore clips under 0.4s (was 0.6 — cut short words like "play")
-        MAX_SPEECH_SEC  = 22.0
-        SILENCE_END_SEC = 1.1    # stop after 1.1s of silence
 
-        # Minimum average RMS of the full recording.
-        # Headset mic headset baseline noise floor is ~80-120 RMS, real speech ~350+.
-        MIN_AVG_RMS     = 180    # was 300 — too high for quiet/calm speech
+        # ── Dynamic VAD — calibrates to ambient noise at startup ─────────
+        # Fixed thresholds fail in noisy rooms (ghost triggers) or quiet rooms
+        # (misses real speech). Calibration measures the actual noise floor
+        # and sets thresholds relative to it.
+
+        # Base thresholds — overwritten after calibration
+        SILENCE_RMS     = 250
+        SPEECH_RMS      = 600
+        MIN_AVG_RMS     = 280
+        MIN_SPEECH_SEC  = 0.45   # clips shorter than this are skipped
+        MAX_SPEECH_SEC  = 22.0
+        SILENCE_END_SEC = 1.1    # stop recording after this much silence
 
         def _chunk_rms(chunk: np.ndarray) -> float:
             """RMS of int16 chunk (range 0–32768)."""
@@ -1562,6 +1562,37 @@ class JarvisLive:
                 with sd.InputStream(**sd_kwargs) as stream:
                     print("[JARVIS] Mic open — listening...")
 
+                    # ── AMBIENT NOISE CALIBRATION ─────────────────────────
+                    # Measure noise floor for 1 second, then set thresholds
+                    # dynamically so they adapt to the current environment.
+                    # This prevents ghost triggers in noisy rooms while keeping
+                    # sensitivity for real speech in quiet rooms.
+                    _cal_chunks = []
+                    _cal_frames = int(SAMPLE_RATE / CHUNK_FRAMES)  # ~43 chunks = 1 second
+                    print("[JARVIS] Calibrating mic noise floor (1s)...")
+                    for _ in range(_cal_frames):
+                        try:
+                            _c, _ = stream.read(CHUNK_FRAMES)
+                            _cal_chunks.append(_chunk_rms(_c))
+                        except Exception:
+                            break
+
+                    if _cal_chunks:
+                        import statistics as _stats
+                        noise_floor = _stats.median(_cal_chunks)
+                        # Speech onset = noise floor × 3.5 (must be clearly louder than background)
+                        # Silence threshold = noise floor × 1.5
+                        # Min avg RMS = noise floor × 2.0 (recording must be richer than background)
+                        SPEECH_RMS      = max(350, int(noise_floor * 3.5))
+                        SILENCE_RMS     = max(150, int(noise_floor * 1.5))
+                        MIN_AVG_RMS     = max(200, int(noise_floor * 2.0))
+                        print(f"[JARVIS] Noise floor: {noise_floor:.0f} RMS → "
+                              f"SPEECH_RMS={SPEECH_RMS}, SILENCE_RMS={SILENCE_RMS}, "
+                              f"MIN_AVG_RMS={MIN_AVG_RMS}")
+                        self.ui.write_log(f"SYS: Mic calibrated (noise={noise_floor:.0f})")
+                    else:
+                        print("[JARVIS] Calibration skipped — using defaults")
+
                     while True:
                         # ── MUTED OR JARVIS SPEAKING: drain buffer aggressively ──
                         if self.ui.muted or self._is_speaking:
@@ -1631,6 +1662,19 @@ class JarvisLive:
                         avg_rms    = float(np.sqrt(np.mean(all_audio.astype(np.float64) ** 2)))
                         if avg_rms < MIN_AVG_RMS:
                             print(f"[JARVIS] Low energy clip (avg RMS {avg_rms:.0f}) — skipped")
+                            continue
+
+                        # Peak check — clip must have at least one clearly voiced chunk
+                        # This kills sustained background noise (fan hum, AC drone) that
+                        # passes the avg check but never peaks like real speech
+                        peak_rms = float(np.max([
+                            np.sqrt(np.mean(
+                                all_audio[i:i+CHUNK_FRAMES].astype(np.float64) ** 2
+                            ))
+                            for i in range(0, len(all_audio) - CHUNK_FRAMES, CHUNK_FRAMES)
+                        ] or [0]))
+                        if peak_rms < SPEECH_RMS * 1.2:
+                            print(f"[JARVIS] No speech peak (peak RMS {peak_rms:.0f}) — skipped")
                             continue
 
                         # ── TRANSCRIBE ──
