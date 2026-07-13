@@ -1238,19 +1238,26 @@ class MainWindow(QMainWindow):
     def _toggle_ontop(self):
         """
         Pin   → compact mode: circular orb window, frameless, top-center, always-on-top.
-        Unpin → full mode: title bar + all panels restored.
+        Unpin → full mode: restores EXACTLY the geometry and state from before pinning.
         """
         self._ontop = not self._ontop
         screen = QApplication.primaryScreen().availableGeometry()
 
         if self._ontop:
+            # ── Save current state before going compact ───────────────────
+            # Capture everything needed to restore after unpin
+            self._pre_pin_geometry   = self.geometry()
+            self._pre_pin_flags      = self.windowFlags()
+            self._pre_pin_maximized  = self.isMaximized()
+            self._pre_pin_fullscreen = self.isFullScreen()
+
             # ── COMPACT MODE — circular orb ───────────────────────────────
             self._left_panel.hide()
             self._right_panel.hide()
             self._footer_widget.hide()
             self._header_widget.hide()
 
-            orb_size = 220   # diameter of the circle
+            orb_size = 220
             x = (screen.width() - orb_size) // 2
             y = 4
 
@@ -1264,8 +1271,7 @@ class MainWindow(QMainWindow):
             self.setGeometry(x, y, orb_size, orb_size)
             self.show()
 
-            # Apply circular mask to centralWidget only — keeps background round
-            # but does NOT clip child widgets like the ✕ button
+            # Apply circular mask to centralWidget only
             from PyQt6.QtGui import QRegion
             circle_region = QRegion(0, 0, orb_size, orb_size, QRegion.RegionType.Ellipse)
             self.centralWidget().setMask(circle_region)
@@ -1274,9 +1280,7 @@ class MainWindow(QMainWindow):
             self.hud.setMinimumSize(orb_size, orb_size)
             self.hud.setMaximumSize(orb_size, orb_size)
 
-            # ✕ button parented to the main window (not centralWidget)
-            # so it is never clipped by the centralWidget mask.
-            # Centered at the top of the circle — always visible, easy to click.
+            # ✕ button — parented to main window, centered at top of circle
             self._pin_btn.setParent(self)
             btn_size = 32
             self._pin_btn.setFixedSize(btn_size, btn_size)
@@ -1298,12 +1302,17 @@ class MainWindow(QMainWindow):
             """)
 
         else:
-            # ── FULL MODE ──────────────────────────────────────────────────
-            # 1. Restore orb constraints first
+            # ── FULL MODE — restore exactly what was there before pinning ─
+
+            # 1. Restore orb constraints
             self.hud.setMinimumSize(300, 300)
             self.hud.setMaximumSize(16777215, 16777215)
 
-            # 2. Re-parent pin button back into header layout
+            # 2. Clear the circular mask from centralWidget
+            self.centralWidget().clearMask()
+            self.clearMask()
+
+            # 3. Re-parent pin button back into header layout
             self._pin_btn.setParent(self._header_widget)
             self._pin_btn.setFixedSize(28, 28)
             self._pin_btn.setText("📌")
@@ -1317,7 +1326,6 @@ class MainWindow(QMainWindow):
                 }}
                 QPushButton:hover {{ background: {C.BORDER_B}; }}
             """)
-            # Clean any duplicate entries from the header layout before re-adding
             hdr_lay = self._header_widget.layout()
             for i in range(hdr_lay.count() - 1, -1, -1):
                 item = hdr_lay.itemAt(i)
@@ -1328,40 +1336,59 @@ class MainWindow(QMainWindow):
             hdr_lay.addWidget(self._pin_btn)
             self._pin_btn.show()
 
-            # 3. Calculate full window size
-            win_w = min(1100, screen.width()  - 40)
-            win_h = min(680,  screen.height() - 60)
-            x     = (screen.width() - win_w) // 2
+            # 4. Restore window flags — use saved pre-pin flags if available,
+            #    otherwise fall back to the standard full-mode flag set
+            restore_flags = getattr(self, "_pre_pin_flags", None)
+            if restore_flags is not None:
+                # Ensure always-on-top and proper frame hints are present
+                restore_flags = (
+                    restore_flags
+                    | Qt.WindowType.Window
+                    | Qt.WindowType.WindowTitleHint
+                    | Qt.WindowType.WindowSystemMenuHint
+                    | Qt.WindowType.WindowMinMaxButtonsHint
+                    | Qt.WindowType.WindowCloseButtonHint
+                    | Qt.WindowType.WindowStaysOnTopHint
+                )
+                # Remove compact-mode-only flags
+                restore_flags &= ~Qt.WindowType.FramelessWindowHint
+                restore_flags &= ~Qt.WindowType.Tool
+            else:
+                restore_flags = (
+                    Qt.WindowType.Window
+                    | Qt.WindowType.WindowTitleHint
+                    | Qt.WindowType.WindowSystemMenuHint
+                    | Qt.WindowType.WindowMinMaxButtonsHint
+                    | Qt.WindowType.WindowCloseButtonHint
+                    | Qt.WindowType.WindowStaysOnTopHint
+                )
 
-            # 4. Set the COMPLETE native-frame flag set.
-            #    Qt.WindowType.Window alone does NOT include the title bar on Windows.
-            #    We must explicitly OR in all the decoration hints.
-            self.setWindowFlags(
-                Qt.WindowType.Window
-                | Qt.WindowType.WindowTitleHint
-                | Qt.WindowType.WindowSystemMenuHint
-                | Qt.WindowType.WindowMinMaxButtonsHint
-                | Qt.WindowType.WindowCloseButtonHint
-                | Qt.WindowType.WindowStaysOnTopHint
-            )
-
-            # 4b. Remove the circular mask — restore rectangular window shape
-            self.clearMask()
-
-            # 5. Restore title, sizes and position
+            self.setWindowFlags(restore_flags)
             self.setWindowTitle("J.A.R.V.I.S — MARK XXXIX")
             self.setMinimumSize(_MIN_W, _MIN_H)
             self.setMaximumSize(16777215, 16777215)
-            self.setGeometry(x, 0, win_w, win_h)
 
-            # 6. Show the window — this MUST come after setWindowFlags so the
-            #    native frame is created with the new flags. show() is synchronous
-            #    here; activateWindow + raise_ force the OS to draw the frame.
+            # 5. Restore geometry — use saved pre-pin geometry if available
+            saved_geo = getattr(self, "_pre_pin_geometry", None)
+            if saved_geo is not None and saved_geo.width() >= _MIN_W and saved_geo.height() >= _MIN_H:
+                self.setGeometry(saved_geo)
+            else:
+                # Default: centered, standard size
+                win_w = min(1100, screen.width()  - 40)
+                win_h = min(680,  screen.height() - 60)
+                x     = (screen.width() - win_w) // 2
+                self.setGeometry(x, 0, win_w, win_h)
+
+            # 6. Show and bring to front
             self.show()
+            if getattr(self, "_pre_pin_maximized", False):
+                self.showMaximized()
+            elif getattr(self, "_pre_pin_fullscreen", False):
+                self.showFullScreen()
             self.activateWindow()
             self.raise_()
 
-            # 7. Restore panels AFTER show so they render correctly
+            # 7. Restore panels AFTER show
             self._left_panel.show()
             self._right_panel.show()
             self._footer_widget.show()
