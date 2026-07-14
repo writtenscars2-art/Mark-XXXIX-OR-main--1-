@@ -1,16 +1,10 @@
 """
 transport_finder.py — All-modes transport search for JARVIS.
 
-Supports:
-  flight      — Google Flights
-  train       — Google Maps transit / Trainline / Rome2rio
-  bus         — Google Maps / FlixBus / Rome2rio
-  taxi / ride — Uber / Bolt / Google Maps
-  car_rental  — Google car rentals / Kayak
-  ferry       — Rome2rio ferry
-  any         — Rome2rio (auto-selects best mode)
+For every transport request, JARVIS builds a clean HTML results page showing
+multiple booking options with direct links, then opens it in the user's browser.
 
-All searches open in the user's real browser — no API keys needed.
+Modes: flight | train | bus | taxi | ride | car_rental | ferry | any
 """
 
 import json
@@ -19,6 +13,7 @@ import subprocess
 import sys
 import shutil
 import time
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -53,7 +48,7 @@ def _get_browser_exe() -> str:
         "msedge": [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
                    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"],
         "chrome": [r"C:\Program Files\Google\Chrome\Application\chrome.exe"],
-        "firefox":[r"C:\Program Files\Mozilla Firefox\firefox.exe"],
+        "firefox": [r"C:\Program Files\Mozilla Firefox\firefox.exe"],
     }
     for path in candidates.get(exe, []):
         if Path(path).exists():
@@ -62,18 +57,37 @@ def _get_browser_exe() -> str:
 
 
 def _open_url(url: str) -> None:
-    """Open URL in the user's default browser — always works."""
+    """Open a URL in the user's default browser."""
     import os as _os
     print(f"[Transport] Opening: {url[:100]}")
+
+    # Local HTML files — use os.startfile (works from any thread)
+    if url.startswith("file:///") or url.startswith("file://"):
+        try:
+            local = url.replace("file:///", "").replace("file://", "").replace("/", "\\")
+            _os.startfile(local)
+            time.sleep(0.8)
+            return
+        except Exception:
+            pass
+        try:
+            import webbrowser
+            webbrowser.open(url)
+            time.sleep(0.8)
+            return
+        except Exception:
+            pass
+        return
+
+    # Web URLs
     exe = _get_browser_exe()
     try:
         if exe:
             subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            _os.startfile(url) if url.startswith("file://") else subprocess.Popen(
-                ["cmd", "/c", "start", "", url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
-        time.sleep(0.5)
+            subprocess.Popen(["cmd", "/c", "start", "", url],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
+        time.sleep(0.6)
     except Exception:
         try:
             import webbrowser
@@ -92,130 +106,265 @@ _MONTH_MAP = {
 }
 
 def _parse_date(raw: str) -> str:
-    """Convert any date expression to YYYY-MM-DD."""
     if not raw:
         return datetime.now().strftime("%Y-%m-%d")
-    raw   = raw.strip()
-    lower = raw.lower()
-    today = datetime.now()
-
-    # Already formatted
+    raw = raw.strip(); lower = raw.lower(); today = datetime.now()
     if re.match(r"\d{4}-\d{2}-\d{2}$", raw):
         return raw
-
-    # Common formats
-    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%d-%m-%Y",
-                "%d/%m/%y", "%m/%d/%y", "%B %d %Y", "%b %d %Y",
-                "%d %B %Y", "%d %b %Y"):
+    for fmt in ("%d/%m/%Y","%m/%d/%Y","%d.%m.%Y","%d-%m-%Y",
+                "%d/%m/%y","%m/%d/%y","%B %d %Y","%b %d %Y","%d %B %Y","%d %b %Y"):
         try:
             return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
         except ValueError:
             pass
-
-    # Relative
-    if "today" in lower:
-        return today.strftime("%Y-%m-%d")
-    if "tomorrow" in lower:
-        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
-    if "day after tomorrow" in lower:
-        return (today + timedelta(days=2)).strftime("%Y-%m-%d")
-
+    if "today" in lower:     return today.strftime("%Y-%m-%d")
+    if "tomorrow" in lower:  return (today+timedelta(days=1)).strftime("%Y-%m-%d")
+    if "day after" in lower: return (today+timedelta(days=2)).strftime("%Y-%m-%d")
     m = re.search(r"in\s+(\d+)\s+days?", lower)
-    if m:
-        return (today + timedelta(days=int(m.group(1)))).strftime("%Y-%m-%d")
-
-    # "15 March", "March 15", "15th March"
+    if m: return (today+timedelta(days=int(m.group(1)))).strftime("%Y-%m-%d")
     day_m = re.search(r"(\d{1,2})(?:st|nd|rd|th)?", raw)
-    for month_name, month_num in _MONTH_MAP.items():
-        if month_name in lower and day_m:
+    for mn, mv in _MONTH_MAP.items():
+        if mn in lower and day_m:
             day  = int(day_m.group(1))
-            year = today.year if month_num > today.month or (
-                month_num == today.month and day >= today.day) else today.year + 1
-            return f"{year}-{month_num:02d}-{day:02d}"
-
-    # Use Groq/NVIDIA as fallback date parser
+            year = today.year if mv > today.month or (mv == today.month and day >= today.day) else today.year+1
+            return f"{year}-{mv:02d}-{day:02d}"
     try:
         from openai import OpenAI
-        cfg      = _load_config()
-        groq_key = cfg.get("groq_api_key",  "").strip()
-        nim_key  = cfg.get("nvidia_api_key", "").strip()
-        if groq_key and groq_key not in ("", "YOUR_GROQ_KEY_HERE"):
-            client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
-            model  = cfg.get("groq_model", "llama-3.3-70b-versatile")
-        elif nim_key:
-            client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=nim_key)
-            model  = cfg.get("nvidia_model", "meta/llama-3.3-70b-instruct")
+        cfg = _load_config()
+        gk  = cfg.get("groq_api_key","").strip()
+        nk  = cfg.get("nvidia_api_key","").strip()
+        if gk and gk not in ("","YOUR_GROQ_KEY_HERE"):
+            cl = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=gk)
+            md = cfg.get("groq_model","llama-3.3-70b-versatile")
+        elif nk:
+            cl = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=nk)
+            md = cfg.get("nvidia_model","meta/llama-3.3-70b-instruct")
         else:
             return today.strftime("%Y-%m-%d")
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "Convert the date to YYYY-MM-DD. Return ONLY the date string."},
-                {"role": "user",   "content": f"Today is {today.strftime('%Y-%m-%d')}. Convert: '{raw}'"},
-            ],
-            max_tokens=20, temperature=0,
-        )
-        result = (resp.choices[0].message.content or "").strip()
-        if re.match(r"\d{4}-\d{2}-\d{2}$", result):
-            return result
+        r = cl.chat.completions.create(
+            model=md,
+            messages=[{"role":"system","content":"Convert to YYYY-MM-DD. Return ONLY the date."},
+                      {"role":"user","content":f"Today={today.strftime('%Y-%m-%d')}. Convert: '{raw}'"}],
+            max_tokens=20, temperature=0)
+        res = (r.choices[0].message.content or "").strip()
+        if re.match(r"\d{4}-\d{2}-\d{2}$", res): return res
     except Exception:
         pass
-
-    print(f"[Transport] Could not parse date '{raw}' — using today")
     return today.strftime("%Y-%m-%d")
 
 
-# ── URL builders ──────────────────────────────────────────────────────────────
+# ── Transport option definitions ──────────────────────────────────────────────
+# Each entry: (site_name, emoji, description, url_builder_lambda)
 
-def _flight_url(origin, destination, date, return_date=None, passengers=1, cabin="economy") -> str:
-    cabin_codes = {"economy":"1","premium":"2","business":"3","first":"4"}
-    cc  = cabin_codes.get(cabin.lower(), "1")
-    q   = f"Flights from {origin} to {destination} on {date}"
-    if return_date:
-        q += f" returning {return_date}"
-    return (f"https://www.google.com/travel/flights?q={quote_plus(q)}"
-            f"&curr=USD&cabin={cc}&adults={passengers}")
+def _get_options(mode: str, origin: str, destination: str,
+                 date: str, return_date: str | None,
+                 passengers: int, cabin: str) -> list[dict]:
+    """Return a list of transport option dicts for the HTML results page."""
+    q_orig = quote_plus(origin)
+    q_dest = quote_plus(destination)
+    q_date = quote_plus(date)
+    q_ret  = quote_plus(return_date) if return_date else ""
+    cc     = {"economy":"1","premium":"2","business":"3","first":"4"}.get(cabin,"1")
+    pax    = str(passengers)
+
+    if mode in ("flight","flights","fly","plane","air"):
+        return [
+            {"name":"Google Flights",   "emoji":"✈️",  "desc":"Compare all airlines — best prices",
+             "url":f"https://www.google.com/travel/flights?q={quote_plus(f'Flights from {origin} to {destination} on {date}')}&curr=USD&cabin={cc}&adults={pax}"},
+            {"name":"Skyscanner",       "emoji":"🔍",  "desc":"Search hundreds of airlines at once",
+             "url":f"https://www.skyscanner.net/transport/flights/{q_orig}/{q_dest}/{date.replace('-','')}/{q_ret.replace('-','') if q_ret else ''}/?adults={pax}&cabinclass={cabin}"},
+            {"name":"Kayak Flights",    "emoji":"🛫",  "desc":"Find deals and set price alerts",
+             "url":f"https://www.kayak.com/flights/{origin.replace(' ','-')}/{destination.replace(' ','-')}/{date}?adults={pax}&cabin={cabin}"},
+            {"name":"Booking.com Flights","emoji":"🏷️","desc":"Flexible booking options",
+             "url":f"https://flights.booking.com/flights/{q_orig}-{q_dest}/?adults={pax}&cabin_class={cabin}&depart_date={date}"},
+            {"name":"Momondo",          "emoji":"💰",  "desc":"Budget flight comparison",
+             "url":f"https://www.momondo.com/flight-search/{origin.replace(' ','-')}/{destination.replace(' ','-')}/{date}?adults={pax}"},
+        ]
+
+    elif mode in ("train","rail","railway"):
+        return [
+            {"name":"Rome2rio (Train)",  "emoji":"🚆", "desc":"All train routes worldwide",
+             "url":f"https://www.rome2rio.com/s/{q_orig}/{q_dest}"},
+            {"name":"Google Maps Transit","emoji":"🗺️","desc":"Step-by-step transit directions",
+             "url":f"https://www.google.com/maps/dir/{q_orig}/{q_dest}/?travelmode=transit"},
+            {"name":"Trainline",         "emoji":"🎫", "desc":"Book train tickets across Europe",
+             "url":f"https://www.thetrainline.com/book/results?origin={q_orig}&destination={q_dest}&outwardDate={date}&passengers={pax}"},
+            {"name":"Omio (Rail)",       "emoji":"🚂", "desc":"Trains across Europe & beyond",
+             "url":f"https://www.omio.com/trains/{q_orig}/{q_dest}/{date}?adults={pax}"},
+            {"name":"Rail Europe",       "emoji":"🇪🇺", "desc":"European train passes & tickets",
+             "url":f"https://www.raileurope.com/en/train-search?origin={q_orig}&destination={q_dest}&date={date}"},
+        ]
+
+    elif mode in ("bus","coach"):
+        return [
+            {"name":"Rome2rio (Bus)",    "emoji":"🚌", "desc":"Bus routes worldwide",
+             "url":f"https://www.rome2rio.com/s/{q_orig}/{q_dest}"},
+            {"name":"FlixBus",           "emoji":"🟢", "desc":"Affordable intercity buses",
+             "url":f"https://shop.flixbus.com/search?rideDate={date}&adult={pax}&_locale=en&from={q_orig}&to={q_dest}"},
+            {"name":"Omio (Bus)",        "emoji":"🚍", "desc":"Buses across Europe",
+             "url":f"https://www.omio.com/buses/{q_orig}/{q_dest}/{date}?adults={pax}"},
+            {"name":"Google Maps Transit","emoji":"🗺️","desc":"Transit + bus directions",
+             "url":f"https://www.google.com/maps/dir/{q_orig}/{q_dest}/?travelmode=transit"},
+            {"name":"Busbud",            "emoji":"🎒", "desc":"Buses worldwide — compare prices",
+             "url":f"https://www.busbud.com/en/bus-tickets/{q_orig}/{q_dest}?outbound_date={date}"},
+        ]
+
+    elif mode in ("taxi","cab","car","drive","driving"):
+        return [
+            {"name":"Google Maps Drive", "emoji":"🗺️", "desc":"Get driving directions & ETA",
+             "url":f"https://www.google.com/maps/dir/{q_orig}/{q_dest}/?travelmode=driving"},
+            {"name":"Waze",              "emoji":"📍",  "desc":"Live traffic & fastest route",
+             "url":f"https://waze.com/ul?navigate=yes&from={q_orig}&to={q_dest}"},
+            {"name":"Uber",              "emoji":"🚖",  "desc":"Book a taxi or ride-share",
+             "url":f"https://m.uber.com/go/product-select?pickup={q_orig}&destination={q_dest}"},
+            {"name":"Bolt",              "emoji":"⚡",  "desc":"Affordable taxi booking",
+             "url":f"https://bolt.eu/en/"},
+            {"name":"inDrive",           "emoji":"🚕",  "desc":"Negotiate your fare",
+             "url":f"https://indrive.com/"},
+        ]
+
+    elif mode in ("ride","uber","bolt","rideshare","ride-share","ride_share"):
+        return [
+            {"name":"Uber",              "emoji":"🚖",  "desc":"Book a ride now",
+             "url":f"https://m.uber.com/go/product-select?pickup={q_orig}&destination={q_dest}"},
+            {"name":"Bolt",              "emoji":"⚡",  "desc":"Affordable rides",
+             "url":f"https://bolt.eu/en/"},
+            {"name":"inDrive",           "emoji":"🚕",  "desc":"Negotiate your price",
+             "url":f"https://indrive.com/"},
+            {"name":"Lyft",              "emoji":"🩷",  "desc":"Rides in the US & Canada",
+             "url":f"https://www.lyft.com/"},
+            {"name":"Google Maps Drive", "emoji":"🗺️", "desc":"See route & travel time",
+             "url":f"https://www.google.com/maps/dir/{q_orig}/{q_dest}/?travelmode=driving"},
+        ]
+
+    elif mode in ("car_rental","car rental","rent","rental","hire"):
+        return [
+            {"name":"Google Car Rentals","emoji":"🚗",  "desc":"Compare all rental companies",
+             "url":f"https://www.google.com/travel/search?q={quote_plus(f'car rental {origin} {date}')}"},
+            {"name":"Kayak Car Rental",  "emoji":"🔑",  "desc":"Best rental deals",
+             "url":f"https://www.kayak.com/cars/{q_orig}/{date}/{return_date or date}"},
+            {"name":"Rentalcars.com",    "emoji":"🏎️", "desc":"100+ suppliers worldwide",
+             "url":f"https://www.rentalcars.com/en/pickuplocation/{q_orig}?pickup={date}&return={return_date or date}"},
+            {"name":"Booking.com Cars",  "emoji":"🏷️", "desc":"Flexible car hire",
+             "url":f"https://www.booking.com/cars/results/{q_orig}.html?pickup_date={date}"},
+            {"name":"Enterprise",        "emoji":"🚙",  "desc":"Global car rental",
+             "url":f"https://www.enterprise.com/en/car-rental/search.html"},
+        ]
+
+    elif mode in ("ferry","boat","ship","cruise"):
+        return [
+            {"name":"Rome2rio (Ferry)",  "emoji":"⛴️", "desc":"Ferry routes worldwide",
+             "url":f"https://www.rome2rio.com/s/{q_orig}/{q_dest}"},
+            {"name":"Direct Ferries",    "emoji":"🚢",  "desc":"Book ferry tickets online",
+             "url":f"https://www.directferries.com/ferries.htm?from={q_orig}&to={q_dest}&depart={date}"},
+            {"name":"Ferryscanner",      "emoji":"🌊",  "desc":"Compare ferry prices",
+             "url":f"https://www.ferryscanner.com/en/ferries/{q_orig}/{q_dest}/{date}?adults={pax}"},
+            {"name":"Aferry",            "emoji":"⚓",  "desc":"European ferry booking",
+             "url":f"https://www.aferry.com/ferry-booking/{q_orig}/{q_dest}/{date}"},
+            {"name":"Google Maps Ferry", "emoji":"🗺️", "desc":"Transit directions by water",
+             "url":f"https://www.google.com/maps/dir/{q_orig}/{q_dest}/?travelmode=transit"},
+        ]
+
+    else:  # "any" — show all modes
+        return [
+            {"name":"Rome2rio",          "emoji":"🌍",  "desc":"ALL transport modes — flights, trains, buses, ferries",
+             "url":f"https://www.rome2rio.com/s/{q_orig}/{q_dest}"},
+            {"name":"Google Flights",    "emoji":"✈️",  "desc":"Compare flights",
+             "url":f"https://www.google.com/travel/flights?q={quote_plus(f'Flights from {origin} to {destination} on {date}')}"},
+            {"name":"Google Maps Transit","emoji":"🚆", "desc":"Trains, buses & transit",
+             "url":f"https://www.google.com/maps/dir/{q_orig}/{q_dest}/?travelmode=transit"},
+            {"name":"Uber",              "emoji":"🚖",  "desc":"Taxi / ride-share",
+             "url":f"https://m.uber.com/go/product-select?pickup={q_orig}&destination={q_dest}"},
+            {"name":"Skyscanner",        "emoji":"🔍",  "desc":"Flights + hotels comparison",
+             "url":f"https://www.skyscanner.net/transport/flights/{q_orig}/{q_dest}/{date.replace('-','')}/"},
+        ]
 
 
-def _train_url(origin, destination, date) -> str:
-    # Rome2rio is the most universal train search
-    q = f"{origin} to {destination}"
-    return f"https://www.rome2rio.com/s/{quote_plus(origin)}/{quote_plus(destination)}"
+# ── HTML results page builder ─────────────────────────────────────────────────
 
+def _build_html_page(
+    options: list[dict],
+    origin: str, destination: str,
+    date: str, mode_str: str,
+    return_date: str | None = None,
+    passengers: int = 1,
+) -> str:
+    """Build a JARVIS-themed HTML page showing transport options with clickable links."""
 
-def _bus_url(origin, destination, date) -> str:
-    return f"https://www.rome2rio.com/s/{quote_plus(origin)}/{quote_plus(destination)}"
+    ret_line = f"<div class='sub'>Return: <b>{return_date}</b></div>" if return_date else ""
+    pax_line = f"<div class='sub'>{passengers} passenger{'s' if passengers > 1 else ''}</div>" if passengers > 1 else ""
 
+    cards = ""
+    for opt in options:
+        name  = opt["name"].replace("<","&lt;").replace(">","&gt;")
+        desc  = opt["desc"].replace("<","&lt;")
+        emoji = opt["emoji"]
+        url   = opt["url"]
+        cards += f"""
+        <a class="card" href="{url}" target="_blank">
+            <div class="card-icon">{emoji}</div>
+            <div class="card-body">
+                <div class="card-title">{name}</div>
+                <div class="card-desc">{desc}</div>
+            </div>
+            <div class="card-arrow">→</div>
+        </a>"""
 
-def _taxi_url(origin, destination) -> str:
-    # Google Maps driving directions
-    return (f"https://www.google.com/maps/dir/{quote_plus(origin)}/{quote_plus(destination)}"
-            f"/?travelmode=driving")
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JARVIS — {mode_str}: {origin} → {destination}</title>
+<style>
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:#00060a;color:#8ffcff;font-family:'Segoe UI',sans-serif;padding:24px;min-height:100vh}}
+  .hdr{{display:flex;align-items:center;gap:14px;margin-bottom:20px;border-bottom:1px solid #0d3347;padding-bottom:16px}}
+  .logo{{color:#00d4ff;font-size:1.5rem;font-weight:700;letter-spacing:3px}}
+  .title{{font-size:1.1rem;color:#d8f8ff;font-weight:600}}
+  .route{{font-size:1.4rem;color:#00d4ff;font-weight:700;margin-bottom:6px;letter-spacing:1px}}
+  .sub{{font-size:.85rem;color:#3a8a9a;margin-bottom:3px}}
+  .mode-badge{{display:inline-block;background:#001f2e;border:1px solid #00d4ff;
+               color:#00d4ff;padding:3px 12px;border-radius:20px;font-size:.8rem;
+               font-weight:600;letter-spacing:1px;margin-bottom:18px;text-transform:uppercase}}
+  .grid{{display:grid;grid-template-columns:1fr;gap:12px;max-width:700px}}
+  .card{{display:flex;align-items:center;gap:16px;background:#010d14;
+         border:1px solid #0d3347;border-radius:10px;padding:16px 20px;
+         text-decoration:none;color:inherit;transition:border-color .2s,background .2s,transform .1s}}
+  .card:hover{{border-color:#00d4ff;background:#011520;transform:translateX(4px)}}
+  .card-icon{{font-size:2rem;flex-shrink:0;width:44px;text-align:center}}
+  .card-body{{flex:1}}
+  .card-title{{font-size:1rem;color:#d8f8ff;font-weight:600;margin-bottom:4px}}
+  .card-desc{{font-size:.82rem;color:#3a8a9a}}
+  .card-arrow{{color:#00d4ff;font-size:1.2rem;flex-shrink:0;opacity:.6}}
+  .card:hover .card-arrow{{opacity:1}}
+  .footer{{margin-top:24px;font-size:.75rem;color:#1a4a5a;border-top:1px solid #0d3347;padding-top:14px}}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <span class="logo">J.A.R.V.I.S</span>
+  <div>
+    <div class="title">Transport Search Results</div>
+  </div>
+</div>
+<div class="route">{origin} → {destination}</div>
+<div class="sub">Departure: <b>{date}</b></div>
+{ret_line}{pax_line}
+<div class="mode-badge">{mode_str}</div>
+<div class="grid">{cards}
+</div>
+<div class="footer">Click any option to open the booking site in a new tab. Searched at {datetime.now().strftime('%Y-%m-%d %H:%M')}.</div>
+</body>
+</html>"""
 
-
-def _ride_url(origin, destination) -> str:
-    # Uber ride estimate
-    return (f"https://m.uber.com/go/product-select"
-            f"?pickup={quote_plus(origin)}&destination={quote_plus(destination)}")
-
-
-def _car_rental_url(location, date, return_date=None) -> str:
-    q = f"car rental {location} {date}"
-    return f"https://www.google.com/travel/search?q={quote_plus(q)}"
-
-
-def _ferry_url(origin, destination, date) -> str:
-    return f"https://www.rome2rio.com/s/{quote_plus(origin)}/{quote_plus(destination)}"
-
-
-def _rome2rio_url(origin, destination) -> str:
-    """Universal multi-modal transport — shows all options (flight/train/bus/ferry)."""
-    return f"https://www.rome2rio.com/s/{quote_plus(origin)}/{quote_plus(destination)}"
-
-
-def _google_maps_transit_url(origin, destination) -> str:
-    return (f"https://www.google.com/maps/dir/{quote_plus(origin)}/{quote_plus(destination)}"
-            f"/?travelmode=transit")
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".html", delete=False,
+        prefix="jarvis_transport_", encoding="utf-8"
+    )
+    tmp.write(html)
+    tmp.close()
+    return Path(tmp.name).as_uri()
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -228,18 +377,17 @@ def transport_finder(
     session_memory=None,
 ) -> str:
     """
-    Find any type of transport between two places and open results in the browser.
+    Find transport options, build a results page and open it in the user's browser.
 
     parameters:
         mode        : flight | train | bus | taxi | ride | car_rental | ferry | any
-                      (default: any — uses Rome2rio to show all options)
         origin      : departure city / address
         destination : arrival city / address
         date        : departure date (natural language or YYYY-MM-DD)
-        return_date : return date for round trips (optional)
+        return_date : return date for round trips
         passengers  : number of passengers (default: 1)
-        cabin       : economy | premium | business | first (flights only)
-        save        : save results to Desktop text file
+        cabin       : economy | premium | business | first (flights)
+        save        : also save results text to Desktop
     """
     params      = parameters or {}
     mode        = params.get("mode",        "any").lower().strip()
@@ -260,102 +408,99 @@ def transport_finder(
     return_date = _parse_date(return_raw) if return_raw else None
 
     if player:
-        player.write_log(f"[Transport] {mode}: {origin} → {destination} on {date}")
+        player.write_log(f"[Transport] {mode}: {origin} → {destination}")
 
     print(f"[Transport] {mode}: {origin} → {destination} | {date} | {passengers} pax")
 
-    # ── Build the right URL based on mode ────────────────────────────────────
-    url      = ""
-    mode_str = ""
+    # ── Map mode to display name ──────────────────────────────────────────────
+    mode_names = {
+        "flight":"Flights","flights":"Flights","fly":"Flights","plane":"Flights","air":"Flights",
+        "train":"Trains","rail":"Trains","railway":"Trains",
+        "bus":"Bus / Coach","coach":"Bus / Coach",
+        "taxi":"Taxi / Driving","cab":"Taxi / Driving","car":"Taxi / Driving",
+        "drive":"Taxi / Driving","driving":"Taxi / Driving",
+        "ride":"Ride-Share","uber":"Ride-Share","bolt":"Ride-Share",
+        "rideshare":"Ride-Share","ride-share":"Ride-Share","ride_share":"Ride-Share",
+        "car_rental":"Car Rental","car rental":"Car Rental",
+        "rent":"Car Rental","rental":"Car Rental","hire":"Car Rental",
+        "ferry":"Ferry / Boat","boat":"Ferry / Boat","ship":"Ferry / Boat","cruise":"Ferry / Boat",
+    }
+    mode_str = mode_names.get(mode, "All Transport Options")
 
-    if mode in ("flight", "flights", "fly", "plane", "air"):
-        url      = _flight_url(origin, destination, date, return_date, passengers, cabin)
-        mode_str = "flight"
+    # ── Get options and build HTML results page ───────────────────────────────
+    options  = _get_options(mode, origin, destination, date, return_date, passengers, cabin)
+    page_url = _build_html_page(options, origin, destination, date, mode_str,
+                                return_date=return_date, passengers=passengers)
 
-    elif mode in ("train", "rail", "railway"):
-        url      = _train_url(origin, destination, date)
-        mode_str = "train"
-        # Also open Google Maps transit
-        _open_url(_google_maps_transit_url(origin, destination))
-        time.sleep(0.4)
+    print(f"[Transport] Opening results page: {page_url[:80]}")
+    _open_url(page_url)
 
-    elif mode in ("bus", "coach"):
-        url      = _bus_url(origin, destination, date)
-        mode_str = "bus"
+    # ── Build spoken response ─────────────────────────────────────────────────
+    try:
+        date_spoken = datetime.strptime(date, "%Y-%m-%d").strftime("%B %d")
+    except Exception:
+        date_spoken = date
 
-    elif mode in ("taxi", "cab", "car"):
-        url      = _taxi_url(origin, destination)
-        mode_str = "taxi / driving"
+    ret_spoken = ""
+    if return_date:
+        try:
+            ret_spoken = f" returning {datetime.strptime(return_date,'%Y-%m-%d').strftime('%B %d')}"
+        except Exception:
+            ret_spoken = f" returning {return_date}"
 
-    elif mode in ("ride", "uber", "bolt", "rideshare", "ride-share"):
-        url      = _ride_url(origin, destination)
-        mode_str = "ride"
-        # Also open Bolt as alternative
-        bolt_url = f"https://bolt.eu/en/?pickup={quote_plus(origin)}&destination={quote_plus(destination)}"
-        _open_url(bolt_url)
-        time.sleep(0.4)
-
-    elif mode in ("car_rental", "car rental", "rent", "rental"):
-        url      = _car_rental_url(origin, date, return_date)
-        mode_str = "car rental"
-
-    elif mode in ("ferry", "boat", "ship"):
-        url      = _ferry_url(origin, destination, date)
-        mode_str = "ferry"
-
-    else:
-        # "any" or unknown — use Rome2rio (shows ALL modes: flight, train, bus, ferry, drive)
-        url      = _rome2rio_url(origin, destination)
-        mode_str = "all transport options"
-        # Also open Google Maps transit
-        _open_url(_google_maps_transit_url(origin, destination))
-        time.sleep(0.4)
-
-    # Open the main URL
-    _open_url(url)
-
-    # Build spoken response
-    date_spoken = datetime.strptime(date, "%Y-%m-%d").strftime("%B %d") if date else "your date"
-    ret_spoken  = f" returning {datetime.strptime(return_date, '%Y-%m-%d').strftime('%B %d')}" if return_date else ""
-    pax_spoken  = f" for {passengers} passenger{'s' if passengers > 1 else ''}" if passengers > 1 else ""
+    pax_spoken = f" for {passengers} passengers" if passengers > 1 else ""
+    site_count = len(options)
 
     spoken = (
-        f"I've opened {mode_str} options from {origin} to {destination} "
-        f"on {date_spoken}{ret_spoken}{pax_spoken} in your browser, boss."
+        f"I found {site_count} {mode_str.lower()} options from {origin} to {destination} "
+        f"on {date_spoken}{ret_spoken}{pax_spoken}, boss. "
+        f"Opening the results in your browser now — click any option to book."
     )
 
     if speak:
         speak(spoken)
 
-    # Optionally save a text note to Desktop
+    # ── Optional Desktop save ─────────────────────────────────────────────────
     if save:
-        ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname   = f"transport_{origin}_{destination}_{ts}.txt".replace(" ", "_")
-        fpath   = Path.home() / "Desktop" / fname
-        content = (
-            f"JARVIS — Transport Search\n{'─'*50}\n"
-            f"Mode        : {mode_str}\n"
-            f"From        : {origin}\n"
-            f"To          : {destination}\n"
-            f"Date        : {date}{(chr(10) + 'Return      : ' + return_date) if return_date else ''}\n"
-            f"Passengers  : {passengers}\n"
-            f"Searched at : {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-            f"URL         : {url}\n"
-        )
-        fpath.write_text(content, encoding="utf-8")
+        ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"transport_{origin}_{destination}_{ts}.txt".replace(" ", "_")
+        fpath = Path.home() / "Desktop" / fname
+        lines = [
+            f"JARVIS — {mode_str} Search Results",
+            "─" * 50,
+            f"From       : {origin}",
+            f"To         : {destination}",
+            f"Date       : {date}",
+        ]
+        if return_date:
+            lines.append(f"Return     : {return_date}")
+        lines += [
+            f"Passengers : {passengers}",
+            f"Searched   : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "─" * 50,
+            "",
+        ]
+        for i, opt in enumerate(options, 1):
+            lines.append(f"{i}. {opt['emoji']} {opt['name']}")
+            lines.append(f"   {opt['desc']}")
+            lines.append(f"   {opt['url']}")
+            lines.append("")
+        fpath.write_text("\n".join(lines), encoding="utf-8")
         try:
             subprocess.Popen(["notepad.exe", str(fpath)])
         except Exception:
             pass
-        spoken += f" Results saved to Desktop: {fpath.name}"
+        spoken += f" Also saved to Desktop: {fpath.name}"
 
     return spoken
 
 
 # ── Backwards-compatibility alias ─────────────────────────────────────────────
-def flight_finder(parameters: dict, player=None, speak=None, response=None, session_memory=None) -> str:
+
+def flight_finder(parameters: dict, player=None, speak=None,
+                  response=None, session_memory=None) -> str:
     """Legacy alias — routes to transport_finder with mode=flight."""
-    if "mode" not in (parameters or {}):
-        parameters = dict(parameters or {})
-        parameters["mode"] = "flight"
-    return transport_finder(parameters, player=player, speak=speak)
+    p = dict(parameters or {})
+    if "mode" not in p:
+        p["mode"] = "flight"
+    return transport_finder(p, player=player, speak=speak)
